@@ -1,10 +1,18 @@
-import { useEffect, useState } from "react";
-
-import AppModal from "../components/AppModal";
-import type { AppModalType } from "../components/AppModal";
+import React, { useEffect, useRef, useState } from "react";
+import { apiFetch } from "../api";
+import { getWhatsAppChatUrl } from "../whatsapp";
+import CheckoutFeedback, {
+  type CheckoutFeedbackContext,
+  type CheckoutFeedbackValues,
+} from "./CheckoutFeedback";
+import RefundMemo, {
+  type RefundMemoData,
+  type RefundMemoGuestType,
+} from "./RefundMemo";
 
 interface CheckOutProps {
   userId: string;
+  userRole: string;
   userName: string;
   onBack: () => void;
 }
@@ -13,189 +21,766 @@ interface EligibleGuest {
   allotment_id: string;
   booking_id: string;
   booking_reference: string;
-
   guest_id: string;
   guest_name: string;
-  mobile_number: string | null;
-
+  booking_person_name?: string | null;
+  booking_person_address?: string | null;
+  guest_type?: RefundMemoGuestType | null;
+  mobile_number?: string;
   room_id: string;
   room_number: string;
-
-  bed_id: string;
-  bed_number: number;
-
+  room_status?: string;
+  bed_id?: string | null;
+  bed_number?: number | null;
+  bed_status?: string | null;
   check_in_date: string;
   expected_check_out_date: string;
-
   allotment_status: string;
-  check_in_status: "NOT_CHECKED_IN" | "CHECKED_IN";
+  check_in_id?: string;
+  check_in_time?: string;
+  check_in_status:
+    | "NOT_CHECKED_IN"
+    | "CHECKED_IN";
 }
 
-function CheckOut({
+interface CheckoutRecord {
+  id: string;
+  booking_id: string;
+  guest_id: string;
+  allotment_id: string;
+  check_out_time: string;
+}
+
+interface BillDetails {
+  bill_date?: string;
+  bill_number: string;
+  room_charges: number;
+  food_charges: number;
+  other_charges: number;
+  discount_amount: number;
+  total_amount: number;
+  payment_status: string;
+  payment_method: string;
+  booking_reference?: string;
+  guest_name?: string;
+  mobile_number?: string;
+  room_number?: string;
+  bed_number?: number | null;
+  category_name?: string;
+  accommodation_type?: string;
+  check_in_date?: string;
+  check_out_time?: string;
+  stay_days?: number;
+  accommodation_rate?: number;
+  additional_person_count?: number;
+  additional_person_rate?: number;
+  additional_person_charges?: number;
+  other_relation_count?: number;
+  other_relation_rate?: number;
+  other_relation_charges?: number;
+  pricing_source?: string;
+  legacy_daily_rate?: number | null;
+  legacy_authorization_reason?: string | null;
+  legacy_authorized_at?: string | null;
+}
+
+interface GeneratedBillResponse {
+  success: boolean;
+  message?: string;
+  bill?: BillDetails;
+  details?: Partial<BillDetails>;
+}
+
+interface PaymentRecord {
+  id: string;
+  amount: number;
+  payment_status: string;
+  payment_method?: string;
+  transaction_number?: string;
+}
+
+interface RefundRecord {
+  id: string;
+  booking_id: string;
+  payment_id: string;
+  original_amount: number;
+  used_amount: number;
+  deduction_amount: number;
+  refund_amount: number;
+  refund_status: string;
+}
+
+interface RefundMemoRecord {
+  id: string;
+  refund_id: string;
+  memo_number: string;
+  memo_date: string;
+  amount: number;
+  generated_by: string;
+}
+
+interface FeedbackNotification {
+  id: string;
+  booking_id: string;
+  guest_id: string;
+  channel: string;
+  notification_status: string;
+  sent_at?: string | null;
+  created_at: string;
+}
+
+type CheckoutType =
+  | "SCHEDULED"
+  | "PRE_CHECKOUT";
+
+type PreCheckoutStep =
+  | "REFUND_CALCULATION"
+  | "REFUND_MEMO"
+  | "FEEDBACK"
+  | "CHECKOUT"
+  | "WHATSAPP"
+  | null;
+
+const CheckOut: React.FC<CheckOutProps> = ({
   userId,
+  userRole,
   userName,
   onBack,
-}: CheckOutProps) {
-  const [guests, setGuests] = useState<EligibleGuest[]>([]);
-  const [loading, setLoading] = useState(true);
+}) => {
+  const [guests, setGuests] = useState<
+    EligibleGuest[]
+  >([]);
 
   const [selectedGuest, setSelectedGuest] =
     useState<EligibleGuest | null>(null);
 
+  const [checkoutType, setCheckoutType] =
+    useState<CheckoutType | null>(null);
+
   const [remarks, setRemarks] = useState("");
 
-  const [confirmingCheckOut, setConfirmingCheckOut] =
+  const [additionalPersonCount, setAdditionalPersonCount] =
+    useState(0);
+
+  const [otherRelationCount, setOtherRelationCount] =
+    useState(0);
+
+  const [completedCheckout, setCompletedCheckout] =
+    useState<CheckoutRecord | null>(null);
+
+  const [generatedBill, setGeneratedBill] =
+    useState<BillDetails | null>(null);
+
+  const billPreviewRef = useRef<HTMLDivElement>(null);
+
+  const [showBillSection, setShowBillSection] =
     useState(false);
 
-  const [processingCheckOut, setProcessingCheckOut] =
+  const [loading, setLoading] =
     useState(false);
 
-  const [modal, setModal] = useState<{
-    type: AppModalType;
-    title: string;
-    message: string;
-  } | null>(null);
+  const [loadingGuests, setLoadingGuests] =
+    useState(true);
 
-  const closeModal = () => {
-    setModal(null);
+  const [error, setError] =
+    useState("");
+
+  const [legacyPricingRequired, setLegacyPricingRequired] =
+    useState(false);
+
+  const [legacyDailyRate, setLegacyDailyRate] =
+    useState("");
+
+  const [legacyGuestType, setLegacyGuestType] =
+    useState("ESM");
+
+  const [legacyAuthorizationReason, setLegacyAuthorizationReason] =
+    useState("");
+
+  const [confirmLegacyRate, setConfirmLegacyRate] =
+    useState(false);
+
+  const [success, setSuccess] =
+    useState("");
+
+  // ---------------------------------------------------------
+  // PAYMENT / REFUND STATE
+  // ---------------------------------------------------------
+
+  const [payment, setPayment] =
+    useState<PaymentRecord | null>(null);
+
+  const [refund, setRefund] =
+    useState<RefundRecord | null>(null);
+
+  const [refundMemo, setRefundMemo] =
+    useState<RefundMemoRecord | null>(null);
+
+  const [feedbackNotification, setFeedbackNotification] =
+    useState<FeedbackNotification | null>(
+      null
+    );
+
+  const [refundAdjustment, setRefundAdjustment] =
+    useState(0);
+
+  const [refundReason, setRefundReason] =
+    useState("");
+
+  const [refundRemarks, setRefundRemarks] =
+    useState("");
+
+  const [preCheckoutStep, setPreCheckoutStep] =
+    useState<PreCheckoutStep>(null);
+
+  const [checkoutFeedbackContext, setCheckoutFeedbackContext] =
+    useState<CheckoutFeedbackContext | null>(null);
+
+  useEffect(() => {
+    if (generatedBill && showBillSection) {
+      billPreviewRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+  }, [generatedBill, showBillSection]);
+
+  // ---------------------------------------------------------
+  // COMMON RESPONSE HELPER
+  // ---------------------------------------------------------
+
+  const readJson = async (
+    response: Response
+  ) => {
+    const data = await response.json();
+
+    if (!response.ok) {
+      const errorDetail =
+        data?.error ||
+        data?.message ||
+        "Request failed.";
+
+      const requestError = new Error(errorDetail);
+      Object.assign(requestError, {
+        code: data?.code,
+      });
+      throw requestError;
+    }
+
+    return data;
   };
 
-
-  /* =========================================
-     LOAD CURRENT OCCUPANTS
-  ========================================= */
+  // ---------------------------------------------------------
+  // LOAD ELIGIBLE GUESTS
+  // ---------------------------------------------------------
 
   const loadEligibleGuests = async () => {
     try {
-      setLoading(true);
+      setLoadingGuests(true);
+      setError("");
 
-      const response = await fetch(
+      const response = await apiFetch(
         "http://localhost:5000/api/check-outs/eligible"
       );
 
-      const data = await response.json();
+      const data = await readJson(
+        response
+      );
 
-      if (!response.ok) {
-        setModal({
-          type: "error",
-          title: "Unable to Load Check-Out List",
-          message:
-            data.message ||
-            "The check-out list could not be loaded.",
-        });
+      /*
+       * Current backend returns:
+       *
+       * {
+       *   value: [...],
+       *   Count: 1
+       * }
+       */
 
-        return;
-      }
-
-      setGuests(
+      const guestList: EligibleGuest[] =
         Array.isArray(data)
           ? data
-          : []
-      );
+          : Array.isArray(data?.value)
+          ? data.value
+          : Array.isArray(data?.guests)
+          ? data.guests
+          : [];
 
-    } catch (error) {
-
+      setGuests(guestList);
+    } catch (err: any) {
       console.error(
-        "Check-out eligible guests error:",
-        error
+        "Load checkout guests error:",
+        err
       );
 
-      setModal({
-        type: "error",
-        title: "Check-Out Server Unavailable",
-        message:
-          "Unable to connect to the check-out server. Please make sure the backend is running.",
-      });
-
+      setError(
+        err?.message ||
+          "Unable to load checked-in guests."
+      );
     } finally {
-
-      setLoading(false);
-
+      setLoadingGuests(false);
     }
   };
-
 
   useEffect(() => {
     loadEligibleGuests();
   }, []);
 
+  // ---------------------------------------------------------
+  // LOAD PAYMENT FOR SELECTED BOOKING
+  // ---------------------------------------------------------
 
-  /* =========================================
-     FORMAT DATE
-  ========================================= */
-
-  const formatDate = (
-    dateValue: string
+  const loadPaymentForBooking = async (
+    bookingId: string
   ) => {
+    try {
+      const response = await apiFetch(
+        `http://localhost:5000/api/payments/booking/${bookingId}`
+      );
 
-    if (!dateValue) {
-      return "-";
-    }
+      const data = await readJson(
+        response
+      );
 
-    const date =
-      new Date(dateValue);
+      /*
+       * Payment route may return:
+       *
+       * { payments: [...] }
+       * or { value: [...] }
+       * or directly [...]
+       */
 
-    if (
-      Number.isNaN(
-        date.getTime()
-      )
-    ) {
-      return dateValue;
-    }
+      const paymentList =
+        Array.isArray(data)
+          ? data
+          : Array.isArray(data?.payments)
+          ? data.payments
+          : Array.isArray(data?.value)
+          ? data.value
+          : [];
 
-    return date.toLocaleDateString(
-      "en-IN",
-      {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
+      if (
+        paymentList.length === 0
+      ) {
+        setPayment(null);
+        return null;
       }
-    );
+
+      const successfulStatuses = [
+        "SUCCESS",
+        "COMPLETED",
+        "PAID",
+        "RECEIVED",
+      ];
+
+      const successfulPayment =
+        paymentList.find(
+          (item: any) =>
+            successfulStatuses.includes(
+              String(
+                item.payment_status ||
+                  ""
+              ).toUpperCase()
+            )
+        ) || paymentList[0];
+
+      const normalizedPayment: PaymentRecord =
+        {
+          id: successfulPayment.id,
+          amount: Number(
+            successfulPayment.amount || 0
+          ),
+          payment_status:
+            successfulPayment.payment_status,
+          payment_method:
+            successfulPayment.payment_method,
+          transaction_number:
+            successfulPayment.transaction_number,
+        };
+
+      setPayment(
+        normalizedPayment
+      );
+
+      return normalizedPayment;
+    } catch (err: any) {
+      console.error(
+        "Load booking payment error:",
+        err
+      );
+
+      setPayment(null);
+
+      throw new Error(
+        err?.message ||
+          "Unable to load booking payment."
+      );
+    }
   };
 
+  // ---------------------------------------------------------
+  // SELECT GUEST
+  // ---------------------------------------------------------
 
-  /* =========================================
-     SELECT GUEST
-     OPENS OVERLAY
-  ========================================= */
-
-  const selectGuest = (
+  const handleSelectGuest = async (
     guest: EligibleGuest
   ) => {
-
     setSelectedGuest(guest);
 
-    setRemarks("");
+    setCheckoutType(null);
 
-    setConfirmingCheckOut(false);
+    setError("");
+    setSuccess("");
+
+    setCompletedCheckout(null);
+    setGeneratedBill(null);
+    setShowBillSection(false);
+
+    setPayment(null);
+    setRefund(null);
+    setRefundMemo(null);
+    setFeedbackNotification(null);
+
+    setRefundAdjustment(0);
+    setRefundReason("");
+    setRefundRemarks("");
+    setPreCheckoutStep(null);
+
+    setCheckoutFeedbackContext(null);
+
+    try {
+      setLoading(true);
+
+      await loadPaymentForBooking(
+        guest.booking_id
+      );
+    } catch (err: any) {
+      setError(
+        err?.message ||
+          "Unable to load payment details."
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
+  // ---------------------------------------------------------
+  // SELECT CHECKOUT TYPE
+  // ---------------------------------------------------------
 
-  /* =========================================
-     CLOSE CHECK-OUT OVERLAY
-  ========================================= */
-
-  const closeCheckOutOverlay = () => {
-
-    if (processingCheckOut) {
+  const handleCheckoutType = async (
+    type: CheckoutType
+  ) => {
+    if (!selectedGuest) {
+      setError(
+        "Please select a guest first."
+      );
       return;
     }
 
-    setSelectedGuest(null);
+    setCheckoutType(type);
 
-    setRemarks("");
+    setError("");
+    setSuccess("");
 
-    setConfirmingCheckOut(false);
+    if (type === "PRE_CHECKOUT") {
+      setPreCheckoutStep(
+        "REFUND_CALCULATION"
+      );
+    } else {
+      await openFinalCheckoutFeedback();
+    }
   };
 
-
-  /* =========================================
-     START CHECK-OUT CONFIRMATION
-  ========================================= */
-
-  const handleCheckOut = () => {
-
+  const openFinalCheckoutFeedback = async () => {
     if (!selectedGuest) {
+      setError("Please select a guest.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+      const response = await apiFetch(
+        `http://localhost:5000/api/checkout-feedback/${selectedGuest.booking_id}/context`
+      );
+      const data = await readJson(response);
+      const context = data?.context as CheckoutFeedbackContext & {
+        is_final_guest_checkout?: boolean;
+      };
+      if (!context || !Array.isArray(context.guests)) {
+        throw new Error("Booking feedback details were not returned.");
+      }
+
+      setCheckoutFeedbackContext(context);
+      setPreCheckoutStep(
+        context.is_final_guest_checkout && !context.feedback
+          ? "FEEDBACK"
+          : "CHECKOUT"
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to prepare the final checkout step."
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saveCheckoutFeedback = async (
+    values?: CheckoutFeedbackValues
+  ) => {
+    if (!selectedGuest) {
+      setError("Please select a guest.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+      const response = await apiFetch(
+        `http://localhost:5000/api/checkout-feedback/${selectedGuest.booking_id}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            values
+              ? {
+                  ...values,
+                  comments: values.comments.trim() || null,
+                }
+              : { skip: true }
+          ),
+        }
+      );
+      const data = await readJson(response);
+      if (!data?.feedback) {
+        throw new Error("Checkout feedback was not saved.");
+      }
+      setCheckoutFeedbackContext((current) =>
+        current ? { ...current, feedback: data.feedback } : current
+      );
+      setPreCheckoutStep("CHECKOUT");
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to save checkout feedback."
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ---------------------------------------------------------
+  // REFUND CALCULATION API
+  // ---------------------------------------------------------
+
+  const calculateRefund = async () => {
+    if (!selectedGuest) {
+      setError(
+        "Please select a guest."
+      );
+      return;
+    }
+
+    if (!payment) {
+      setError(
+        "No successful payment found for this booking."
+      );
+      return;
+    }
+
+    if (refundAdjustment < 0) {
+      setError(
+        "Adjustment amount cannot be negative."
+      );
+      return;
+    }
+
+    if (
+      refundAdjustment >
+      Number(payment.amount)
+    ) {
+      setError(
+        "Adjustment amount cannot exceed the payment amount."
+      );
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+      setSuccess("");
+
+      const response = await apiFetch(
+        "http://localhost:5000/api/refunds/calculate",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            booking_id:
+              selectedGuest.booking_id,
+
+            payment_id:
+              payment.id,
+
+            original_amount:
+              Number(payment.amount),
+
+            used_amount: 0,
+
+            deduction_amount:
+              refundAdjustment,
+
+            refund_reason:
+              refundReason.trim() ||
+              "Pre Check-Out",
+
+            calculated_by: userId,
+
+            remarks:
+              refundRemarks.trim() ||
+              null,
+          }),
+        }
+      );
+
+      const data = await readJson(
+        response
+      );
+
+      if (!data?.refund?.id) {
+        throw new Error(
+          "Refund was calculated but refund ID was not returned."
+        );
+      }
+
+      setRefund(
+        data.refund
+      );
+
+      setSuccess(
+        `Refund calculated successfully. Refund amount: ₹${Number(
+          data.refund.refund_amount || 0
+        ).toFixed(2)}`
+      );
+
+      setPreCheckoutStep(
+        "REFUND_MEMO"
+      );
+    } catch (err: any) {
+      console.error(
+        "Refund calculation error:",
+        err
+      );
+
+      setError(
+        err?.message ||
+          "Unable to calculate refund."
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ---------------------------------------------------------
+  // REFUND MEMO API
+  // ---------------------------------------------------------
+
+  const createRefundMemo = async (
+    memo: RefundMemoData
+  ) => {
+    if (!refund) {
+      setError(
+        "Refund calculation is required before creating the memo."
+      );
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+      setSuccess("");
+
+      const response = await apiFetch(
+        `http://localhost:5000/api/refunds/${refund.id}/memo`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            memo_number:
+              memo.memoNumber,
+
+            amount: memo.refundableAmount,
+
+            generated_by:
+              userId,
+
+            memo_date:
+              memo.memoDate,
+
+            remarks:
+              [memo.memoType, memo.remarks]
+                .filter(Boolean)
+                .join(" · ") ||
+              "Pre Check-Out Refund Memo",
+          }),
+        }
+      );
+
+      const data = await readJson(
+        response
+      );
+
+      if (
+        !data?.refund_memo?.id
+      ) {
+        throw new Error(
+          "Refund memo was created but memo details were not returned."
+        );
+      }
+
+      setRefundMemo(
+        data.refund_memo
+      );
+
+      setSuccess(
+        "Refund memo generated successfully."
+      );
+
+      await openFinalCheckoutFeedback();
+    } catch (err: any) {
+      console.error(
+        "Refund memo error:",
+        err
+      );
+
+      setError(
+        err?.message ||
+          "Unable to create refund memo."
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ---------------------------------------------------------
+  // ACTUAL CHECK-OUT API
+  // ---------------------------------------------------------
+
+  const processCheckOut = async () => {
+    if (!selectedGuest) {
+      setError(
+        "Please select a guest."
+      );
       return;
     }
 
@@ -203,47 +788,48 @@ function CheckOut({
       selectedGuest.check_in_status !==
       "CHECKED_IN"
     ) {
-
-      setModal({
-        type: "warning",
-        title: "Guest Not Checked In",
-        message:
-          "This guest has not been checked in yet. Check-out can only be completed for a checked-in guest.",
-      });
-
+      setError(
+        "Only checked-in guests can be checked out."
+      );
       return;
     }
 
-    setConfirmingCheckOut(true);
-  };
+    if (!checkoutType) {
+      setError(
+        "Please select Scheduled Check-Out or Pre Check-Out."
+      );
+      return;
+    }
 
-
-  /* =========================================
-     PROCESS CHECK-OUT
-  ========================================= */
-
-  const processCheckOut = async () => {
-
-    if (!selectedGuest) {
+    /*
+     * For Pre Check-Out, don't allow actual
+     * checkout before refund memo.
+     */
+    if (
+      checkoutType ===
+        "PRE_CHECKOUT" &&
+      !refundMemo
+    ) {
+      setError(
+        "Refund memo must be generated before Pre Check-Out."
+      );
       return;
     }
 
     try {
+      setLoading(true);
+      setError("");
+      setSuccess("");
 
-      setProcessingCheckOut(true);
-
-      const response = await fetch(
+      const response = await apiFetch(
         "http://localhost:5000/api/check-outs",
         {
           method: "POST",
-
           headers: {
             "Content-Type":
               "application/json",
           },
-
           body: JSON.stringify({
-
             booking_id:
               selectedGuest.booking_id,
 
@@ -256,749 +842,2458 @@ function CheckOut({
             checked_out_by:
               userId,
 
+            checkout_type:
+              checkoutType,
+
             remarks:
               remarks.trim() ||
-              null,
-
+              (checkoutType ===
+              "PRE_CHECKOUT"
+                ? "Pre Check-Out"
+                : "Scheduled Check-Out"),
           }),
         }
       );
 
+      const data = await readJson(
+        response
+      );
 
-      const data =
-        await response.json();
+      const checkout =
+        data.checkout;
 
+      if (!checkout?.id) {
+        throw new Error(
+          "Check-Out completed but checkout record was not returned."
+        );
+      }
 
-      if (!response.ok) {
+      setCompletedCheckout(
+        checkout
+      );
 
-        setModal({
-          type: "error",
-          title: "Check-Out Failed",
-          message:
-            data.message ||
-            "The guest could not be checked out.",
-        });
+      if (
+        checkoutType ===
+        "PRE_CHECKOUT"
+      ) {
+        setSuccess(
+          "Pre Check-Out completed. Generating the final bill..."
+        );
+      } else {
+        setSuccess(
+          "Scheduled Check-Out completed successfully."
+        );
+      }
 
+      await generateBill(
+        checkout.id
+      );
+    } catch (err: any) {
+      console.error(
+        "Checkout error:",
+        err
+      );
+
+      if (
+        err?.message ===
+        "Complete or skip the booking feedback form before the final guest checkout."
+      ) {
+        await openFinalCheckoutFeedback();
         return;
       }
 
-
-      const guestName =
-        selectedGuest.guest_name;
-
-      const roomNumber =
-        selectedGuest.room_number;
-
-      const bedNumber =
-        selectedGuest.bed_number;
-
-
-      /* =================================
-         CLOSE OVERLAY
-      ================================= */
-
-      setSelectedGuest(null);
-
-      setRemarks("");
-
-      setConfirmingCheckOut(false);
-
-
-      /* =================================
-         SUCCESS MESSAGE
-      ================================= */
-
-      setModal({
-        type: "success",
-        title: "Check-Out Completed",
-        message:
-          `${guestName} has been checked out successfully.\n\nRoom: ${roomNumber}\nBed: ${bedNumber}\n\nThe room is now waiting for housekeeping.`,
-      });
-
-
-      /* =================================
-         REFRESH OCCUPANTS
-      ================================= */
-
-      await loadEligibleGuests();
-
-
-    } catch (error) {
-
-      console.error(
-        "Check-out API error:",
-        error
+      setError(
+        err?.message ||
+          "Unable to complete Check-Out."
       );
-
-      setModal({
-        type: "error",
-        title:
-          "Check-Out Server Unavailable",
-        message:
-          "Unable to connect to the check-out server. Please make sure the backend is running and try again.",
-      });
-
     } finally {
-
-      setProcessingCheckOut(false);
-
+      setLoading(false);
     }
   };
 
+  // ---------------------------------------------------------
+  // BILL GENERATION
+  // ---------------------------------------------------------
+
+  const generateBill = async (
+    checkoutId: string
+  ) => {
+    if (!selectedGuest) {
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+
+      const response = await apiFetch(
+        "http://localhost:5000/api/bills/generate",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            booking_id:
+              selectedGuest.booking_id,
+
+            guest_id:
+              selectedGuest.guest_id,
+
+            check_out_id:
+              checkoutId,
+
+            generated_by:
+              userId,
+
+            is_serving:
+              false,
+
+            additional_person_count:
+              additionalPersonCount,
+
+            other_relation_count:
+              otherRelationCount,
+
+            ...(legacyPricingRequired
+              ? {
+                  legacy_daily_rate:
+                    legacyDailyRate,
+                  legacy_guest_type:
+                    legacyGuestType,
+                  legacy_authorization_reason:
+                    legacyAuthorizationReason,
+                  confirm_legacy_rate:
+                    confirmLegacyRate,
+                }
+              : {}),
+          }),
+        }
+      );
+
+      const data: GeneratedBillResponse =
+        await readJson(response);
+
+      if (!data.bill) {
+        throw new Error(
+          "Bill generation completed but bill details were not returned."
+        );
+      }
+
+      setGeneratedBill(
+        {
+          ...data.bill,
+          ...data.details,
+        }
+      );
+
+      setLegacyPricingRequired(false);
+      setShowBillSection(
+        true
+      );
+
+      if (checkoutType === "PRE_CHECKOUT") {
+        setPreCheckoutStep("WHATSAPP");
+      }
+
+      setSuccess(
+        checkoutType === "PRE_CHECKOUT"
+          ? "Pre Check-Out and final bill completed successfully."
+          : "Check-Out and final bill completed successfully."
+      );
+    } catch (err: any) {
+      console.error(
+        "Bill generation error:",
+        err
+      );
+
+      if (err?.code === "LEGACY_PRICING_REQUIRED") {
+        setLegacyPricingRequired(true);
+        setError("");
+      } else {
+        setError(
+          err?.message ||
+            "Unable to generate final bill."
+        );
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ---------------------------------------------------------
+  // WHATSAPP FEEDBACK API
+  // ---------------------------------------------------------
+
+  const createWhatsAppFeedback = async (
+    status:
+      | "PENDING"
+      | "SENT"
+      | "SKIPPED"
+  ) => {
+    if (!selectedGuest) {
+      setError(
+        "Please select a guest."
+      );
+      return;
+    }
+
+    if (
+      status === "SENT" &&
+      !window.confirm(
+        "Did you send the feedback message to this guest in WhatsApp?"
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+      setSuccess("");
+
+      const response = await apiFetch(
+        "http://localhost:5000/api/feedback-notifications",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            booking_id:
+              selectedGuest.booking_id,
+
+            guest_id:
+              selectedGuest.guest_id,
+
+            notification_status:
+              status,
+          }),
+        }
+      );
+
+      const data = await readJson(
+        response
+      );
+
+      if (
+        !data?.notification?.id
+      ) {
+        throw new Error(
+          "Feedback notification was not returned."
+        );
+      }
+
+      setFeedbackNotification(
+        data.notification
+      );
+
+      if (status === "SENT") {
+        setSuccess(
+          "WhatsApp feedback marked as SENT. Workflow completed."
+        );
+      } else if (
+        status === "SKIPPED"
+      ) {
+        setSuccess(
+          "WhatsApp feedback marked as SKIPPED. Workflow completed."
+        );
+      } else {
+        setSuccess(
+          "WhatsApp feedback notification created."
+        );
+      }
+    } catch (err: any) {
+      console.error(
+        "WhatsApp feedback error:",
+        err
+      );
+
+      setError(
+        err?.message ||
+          "Unable to create WhatsApp feedback notification."
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openWhatsAppFeedback = () => {
+    if (!selectedGuest?.mobile_number) {
+      setError(
+        "The guest does not have a mobile number for WhatsApp."
+      );
+      return;
+    }
+
+    const message =
+      `Hello ${selectedGuest.guest_name}, thank you for staying at ESM Rest House. Please share your feedback about your stay. Booking reference: ${selectedGuest.booking_reference}`;
+
+    try {
+      window.open(
+        getWhatsAppChatUrl(
+          selectedGuest.mobile_number,
+          message
+        ),
+        "_blank",
+        "noopener,noreferrer"
+      );
+    } catch (error) {
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Unable to open WhatsApp."
+      );
+    }
+  };
+
+  // ---------------------------------------------------------
+  // PRINT
+  // ---------------------------------------------------------
+
+  const printBill = () => {
+    window.print();
+  };
+
+  // ---------------------------------------------------------
+  // RESET
+  // ---------------------------------------------------------
+
+  const resetSelection = () => {
+    setSelectedGuest(null);
+
+    setCheckoutType(null);
+
+    setCompletedCheckout(null);
+
+    setGeneratedBill(null);
+
+    setLegacyPricingRequired(false);
+
+    setLegacyDailyRate("");
+
+    setLegacyGuestType("ESM");
+
+    setLegacyAuthorizationReason("");
+
+    setConfirmLegacyRate(false);
+
+    setShowBillSection(false);
+
+    setPayment(null);
+
+    setRefund(null);
+
+    setRefundMemo(null);
+
+    setFeedbackNotification(
+      null
+    );
+
+    setRefundAdjustment(0);
+
+    setRefundReason("");
+
+    setRefundRemarks("");
+
+    setPreCheckoutStep(null);
+
+    setCheckoutFeedbackContext(null);
+
+    setError("");
+
+    setSuccess("");
+
+    setRemarks("");
+  };
+
+  // ---------------------------------------------------------
+  // RENDER
+  // ---------------------------------------------------------
 
   return (
-    <main className="dashboard-screen">
+    <div
+      style={{
+        minHeight: "100vh",
+        background: "#f4f7fb",
+        padding: "42px 7%",
+        color: "#17233c",
+      }}
+    >
+      {/* HEADER */}
 
-      {/* =====================================
-          HEADER
-      ===================================== */}
-
-      <header className="dashboard-header">
-
-        <div className="dashboard-brand">
-
-          <div className="dashboard-logo">
-            ESM
-          </div>
-
-          <div>
-
-            <h1>
-              ESM REST HOUSE
-            </h1>
-
-            <p>
-              Booking &amp; Management System
-            </p>
-
-          </div>
-
-        </div>
-
-
-        <div className="dashboard-user">
-
-          <div className="user-info">
-
-            <strong>
-              {userName}
-            </strong>
-
-            <span>
-              CHECK-OUT
-            </span>
-
-          </div>
-
-        </div>
-
-      </header>
-
-
-      {/* =====================================
-          MAIN CONTENT
-      ===================================== */}
-
-      <section className="dashboard-content">
-
-        <div className="dashboard-title">
-
-          <div>
-
-            <h2>
-              Guest Check-Out
-            </h2>
-
-            <p>
-              Select a checked-in guest to complete check-out
-            </p>
-
-          </div>
-
-
-          <button
-            type="button"
-            className="logout-button"
-            onClick={onBack}
+      <div
+        style={{
+          display: "flex",
+          justifyContent:
+            "space-between",
+          alignItems: "center",
+          marginBottom: 30,
+        }}
+      >
+        <div>
+          <h1
+            style={{
+              margin: 0,
+              fontSize: 36,
+              fontWeight: 800,
+            }}
           >
-            BACK TO DASHBOARD
-          </button>
+            Guest Check-Out
+          </h1>
 
+          <p
+            style={{
+              marginTop: 8,
+              color: "#64748b",
+              fontSize: 16,
+            }}
+          >
+            Complete scheduled or
+            pre check-out process
+          </p>
         </div>
 
+        <button
+          onClick={onBack}
+          style={{
+            padding:
+              "12px 24px",
+            borderRadius: 8,
+            border:
+              "1px solid #cbd5e1",
+            background: "#fff",
+            fontWeight: 700,
+            cursor: "pointer",
+          }}
+        >
+          BACK TO DASHBOARD
+        </button>
+      </div>
 
-        {/* =====================================
-            CURRENT OCCUPANTS
-        ===================================== */}
+      {/* ERROR */}
 
-        <div className="dashboard-panel">
+      {error && (
+        <div
+          style={{
+            background: "#fff1f2",
+            border:
+              "1px solid #fecdd3",
+            color: "#be123c",
+            padding: 16,
+            borderRadius: 10,
+            marginBottom: 20,
+            fontWeight: 600,
+          }}
+        >
+          {error}
+        </div>
+      )}
 
-          <div className="panel-heading">
+      {/* SUCCESS */}
 
-            <div>
+      {success && (
+        <div
+          style={{
+            background: "#ecfdf5",
+            border:
+              "1px solid #a7f3d0",
+            color: "#047857",
+            padding: 16,
+            borderRadius: 10,
+            marginBottom: 20,
+            fontWeight: 600,
+          }}
+        >
+          {success}
+        </div>
+      )}
 
-              <h3>
-                Current Occupants
-              </h3>
+      {/* CURRENT OCCUPANTS */}
 
-              <p>
-                Guests currently allotted to rooms and beds
-              </p>
+      {!selectedGuest && (
+        <div
+          style={{
+            background: "#fff",
+            borderRadius: 18,
+            border:
+              "1px solid #dbe3ec",
+            padding: 26,
+            boxShadow:
+              "0 8px 24px rgba(15, 23, 42, 0.05)",
+          }}
+        >
+          <h2
+            style={{
+              marginTop: 0,
+              fontSize: 21,
+            }}
+          >
+            Current Occupants
+          </h2>
 
+          <p
+            style={{
+              color: "#64748b",
+              marginBottom: 22,
+            }}
+          >
+            Guests currently
+            checked in
+          </p>
+
+          {loadingGuests ? (
+            <div
+              style={{
+                padding: 30,
+                textAlign: "center",
+                color: "#64748b",
+              }}
+            >
+              Loading checked-in
+              guests...
             </div>
-
-          </div>
-
-
-          {loading ? (
-
-            <div className="checkout-empty-state">
-              Loading current occupants...
+          ) : guests.length ===
+            0 ? (
+            <div
+              style={{
+                padding: 30,
+                textAlign: "center",
+                background:
+                  "#f8fafc",
+                borderRadius: 12,
+                color: "#64748b",
+              }}
+            >
+              No checked-in guests
+              available.
             </div>
-
-          ) : guests.length === 0 ? (
-
-            <div className="checkout-empty-state">
-              No guests are currently available for check-out.
-            </div>
-
           ) : (
-
-            <div className="checkout-table">
-
-              {/* TABLE HEADER */}
-
-              <div className="checkout-row checkout-header">
-
-                <span>
-                  Booking
-                </span>
-
-                <span>
-                  Guest
-                </span>
-
-                <span>
-                  Room
-                </span>
-
-                <span>
-                  Bed
-                </span>
-
-                <span>
-                  Check-In
-                </span>
-
-                <span>
-                  Expected Check-Out
-                </span>
-
-                <span>
-                  Status
-                </span>
-
-              </div>
-
-
-              {/* GUEST ROWS */}
-
-              {guests.map(
-                (guest) => (
-
-                  <button
-                    key={
-                      guest.allotment_id
-                    }
-                    type="button"
-                    className={`checkout-row checkout-select-row ${
-                      selectedGuest?.allotment_id ===
-                      guest.allotment_id
-                        ? "checkout-row-selected"
-                        : ""
-                    }`}
-                    onClick={() =>
-                      selectGuest(guest)
-                    }
+            <div
+              style={{
+                overflowX:
+                  "auto",
+                border:
+                  "1px solid #dbe3ec",
+                borderRadius: 14,
+              }}
+            >
+              <table
+                style={{
+                  width: "100%",
+                  borderCollapse:
+                    "collapse",
+                }}
+              >
+                <thead>
+                  <tr
+                    style={{
+                      background:
+                        "#f8fafc",
+                    }}
                   >
-
-                    <span>
-                      {
-                        guest.booking_reference
-                      }
-                    </span>
-
-
-                    <span>
-
-                      <strong>
-                        {
-                          guest.guest_name
-                        }
-                      </strong>
-
-                      {guest.mobile_number && (
-
-                        <small>
-                          {
-                            guest.mobile_number
+                    {[
+                      "BOOKING",
+                      "GUEST",
+                      "ROOM",
+                      "BED",
+                      "CHECK-IN",
+                      "EXPECTED CHECK-OUT",
+                      "STATUS",
+                      "ACTION",
+                    ].map(
+                      (
+                        heading
+                      ) => (
+                        <th
+                          key={
+                            heading
                           }
-                        </small>
+                          style={{
+                            padding:
+                              "16px 14px",
+                            textAlign:
+                              "left",
+                            fontSize:
+                              12,
+                            color:
+                              "#64748b",
+                            letterSpacing:
+                              0.5,
+                            whiteSpace:
+                              "nowrap",
+                          }}
+                        >
+                          {
+                            heading
+                          }
+                        </th>
+                      )
+                    )}
+                  </tr>
+                </thead>
 
-                      )}
+                <tbody>
+                  {guests.map(
+                    (
+                      guest
+                    ) => (
+                      <tr
+                        key={
+                          guest.allotment_id
+                        }
+                        style={{
+                          borderTop:
+                            "1px solid #e2e8f0",
+                        }}
+                      >
+                        <td
+                          style={{
+                            padding:
+                              16,
+                            fontWeight:
+                              700,
+                          }}
+                        >
+                          {
+                            guest.booking_reference
+                          }
+                        </td>
 
-                    </span>
+                        <td
+                          style={{
+                            padding:
+                              16,
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontWeight:
+                                700,
+                            }}
+                          >
+                            {
+                              guest.guest_name
+                            }
+                          </div>
 
+                          {guest.mobile_number && (
+                            <div
+                              style={{
+                                fontSize:
+                                  12,
+                                color:
+                                  "#64748b",
+                                marginTop:
+                                  4,
+                              }}
+                            >
+                              {
+                                guest.mobile_number
+                              }
+                            </div>
+                          )}
+                        </td>
 
-                    <span>
-                      {
-                        guest.room_number
-                      }
-                    </span>
+                        <td
+                          style={{
+                            padding:
+                              16,
+                            fontWeight:
+                              600,
+                          }}
+                        >
+                          {
+                            guest.room_number
+                          }
+                        </td>
 
+                        <td
+                          style={{
+                            padding:
+                              16,
+                          }}
+                        >
+                          {guest.bed_number
+                            ? `Bed ${guest.bed_number}`
+                            : "Room Only"}
+                        </td>
 
-                    <span>
-                      Bed{" "}
-                      {
-                        guest.bed_number
-                      }
-                    </span>
+                        <td
+                          style={{
+                            padding:
+                              16,
+                          }}
+                        >
+                          {new Date(
+                            guest.check_in_date
+                          ).toLocaleDateString(
+                            "en-IN"
+                          )}
+                        </td>
 
+                        <td
+                          style={{
+                            padding:
+                              16,
+                          }}
+                        >
+                          {new Date(
+                            guest.expected_check_out_date
+                          ).toLocaleDateString(
+                            "en-IN"
+                          )}
+                        </td>
 
-                    <span>
-                      {
-                        formatDate(
-                          guest.check_in_date
-                        )
-                      }
-                    </span>
+                        <td
+                          style={{
+                            padding:
+                              16,
+                          }}
+                        >
+                          <span
+                            style={{
+                              display:
+                                "inline-block",
+                              padding:
+                                "7px 12px",
+                              borderRadius:
+                                999,
+                              background:
+                                "#ecfdf5",
+                              color:
+                                "#047857",
+                              fontSize:
+                                12,
+                              fontWeight:
+                                800,
+                            }}
+                          >
+                            CHECKED IN
+                          </span>
+                        </td>
 
-
-                    <span>
-                      {
-                        formatDate(
-                          guest.expected_check_out_date
-                        )
-                      }
-                    </span>
-
-
-                    <span>
-
-                      {guest.check_in_status ===
-                      "CHECKED_IN" ? (
-
-                        <span className="status-confirmed">
-                          Checked In
-                        </span>
-
-                      ) : (
-
-                        <span className="status-pending">
-                          Not Checked In
-                        </span>
-
-                      )}
-
-                    </span>
-
-                  </button>
-
-                )
-              )}
-
+                        <td
+                          style={{
+                            padding:
+                              16,
+                          }}
+                        >
+                          <button
+                            onClick={() =>
+                              handleSelectGuest(
+                                guest
+                              )
+                            }
+                            style={{
+                              padding:
+                                "10px 16px",
+                              border:
+                                "none",
+                              borderRadius:
+                                8,
+                              background:
+                                "#1f4d36",
+                              color:
+                                "#fff",
+                              fontWeight:
+                                700,
+                              cursor:
+                                "pointer",
+                            }}
+                          >
+                            SELECT
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  )}
+                </tbody>
+              </table>
             </div>
-
           )}
-
         </div>
+      )}
 
-      </section>
-
-
-      {/* =====================================================
-          CHECK-OUT DETAILS OVERLAY
-
-          IMPORTANT:
-          This is position: fixed.
-          It therefore sits OVER the Current Occupants page
-          instead of pushing the page down.
-      ===================================================== */}
+      {/* SELECTED GUEST */}
 
       {selectedGuest && (
-
-        <div
-          className="checkout-overlay"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="checkout-overlay-title"
-        >
-
-          {/* BACKDROP */}
-
+        <>
           <div
-            className="checkout-overlay-backdrop"
-            onClick={
-              processingCheckOut
-                ? undefined
-                : closeCheckOutOverlay
-            }
-          />
-
-
-          {/* MODAL */}
-
-          <div className="checkout-overlay-card">
-
-            {/* MODAL HEADER */}
-
-            <div className="checkout-overlay-header">
-
+            style={{
+              background: "#fff",
+              borderRadius: 18,
+              border:
+                "1px solid #dbe3ec",
+              padding: 28,
+              marginBottom: 22,
+            }}
+          >
+            <div
+              style={{
+                display:
+                  "flex",
+                justifyContent:
+                  "space-between",
+                alignItems:
+                  "flex-start",
+              }}
+            >
               <div>
-
-                <div className="checkout-overlay-eyebrow">
-                  GUEST CHECK-OUT
+                <div
+                  style={{
+                    fontSize: 12,
+                    color:
+                      "#64748b",
+                    fontWeight:
+                      700,
+                    letterSpacing:
+                      1,
+                  }}
+                >
+                  SELECTED GUEST
                 </div>
 
-                <h3
-                  id="checkout-overlay-title"
+                <h2
+                  style={{
+                    margin:
+                      "7px 0 8px",
+                    fontSize:
+                      27,
+                  }}
                 >
-                  Check-Out Details
-                </h3>
-
-                <p>
-                  Review the selected occupant before completing check-out.
-                </p>
-
-              </div>
-
-
-              <button
-                type="button"
-                className="checkout-overlay-close"
-                onClick={
-                  closeCheckOutOverlay
-                }
-                disabled={
-                  processingCheckOut
-                }
-                aria-label="Close"
-              >
-                ×
-              </button>
-
-            </div>
-
-
-            {/* DETAILS */}
-
-            <div className="checkout-overlay-details">
-
-              <div className="checkout-detail-card">
-
-                <span>
-                  Guest
-                </span>
-
-                <strong>
                   {
                     selectedGuest.guest_name
                   }
-                </strong>
+                </h2>
 
-                {selectedGuest.mobile_number && (
-
-                  <small>
+                <div
+                  style={{
+                    color:
+                      "#64748b",
+                  }}
+                >
+                  Booking:{" "}
+                  <strong>
                     {
-                      selectedGuest.mobile_number
+                      selectedGuest.booking_reference
                     }
-                  </small>
-
-                )}
-
+                  </strong>
+                </div>
               </div>
 
-
-              <div className="checkout-detail-card">
-
-                <span>
-                  Booking Reference
-                </span>
-
-                <strong>
-                  {
-                    selectedGuest.booking_reference
-                  }
-                </strong>
-
-              </div>
-
-
-              <div className="checkout-detail-card">
-
-                <span>
-                  Room
-                </span>
-
-                <strong>
-                  {
-                    selectedGuest.room_number
-                  }
-                </strong>
-
-              </div>
-
-
-              <div className="checkout-detail-card">
-
-                <span>
-                  Bed
-                </span>
-
-                <strong>
-                  Bed{" "}
-                  {
-                    selectedGuest.bed_number
-                  }
-                </strong>
-
-              </div>
-
-
-              <div className="checkout-detail-card">
-
-                <span>
-                  Check-In
-                </span>
-
-                <strong>
-                  {
-                    formatDate(
-                      selectedGuest.check_in_date
-                    )
-                  }
-                </strong>
-
-              </div>
-
-
-              <div className="checkout-detail-card">
-
-                <span>
-                  Expected Check-Out
-                </span>
-
-                <strong>
-                  {
-                    formatDate(
-                      selectedGuest.expected_check_out_date
-                    )
-                  }
-                </strong>
-
-              </div>
-
+              <button
+                onClick={
+                  resetSelection
+                }
+                style={{
+                  padding:
+                    "10px 18px",
+                  borderRadius:
+                    8,
+                  border:
+                    "1px solid #cbd5e1",
+                  background:
+                    "#fff",
+                  fontWeight:
+                    700,
+                  cursor:
+                    "pointer",
+                }}
+              >
+                CHANGE GUEST
+              </button>
             </div>
 
-
-            {/* REMARKS */}
-
-            <div className="checkout-overlay-remarks">
-
-              <label
-                htmlFor="checkout-remarks"
-              >
-                Remarks
-              </label>
-
-              <textarea
-                id="checkout-remarks"
-                value={remarks}
-                onChange={(event) =>
-                  setRemarks(
-                    event.target.value
-                  )
-                }
-                placeholder="Optional checkout remarks"
-                rows={4}
-                disabled={
-                  processingCheckOut
+            <div
+              style={{
+                display:
+                  "grid",
+                gridTemplateColumns:
+                  "repeat(4, 1fr)",
+                gap: 16,
+                marginTop:
+                  24,
+              }}
+            >
+              <InfoCard
+                label="ROOM"
+                value={
+                  selectedGuest.room_number
                 }
               />
 
+              <InfoCard
+                label="BED"
+                value={
+                  selectedGuest.bed_number
+                    ? `Bed ${selectedGuest.bed_number}`
+                    : "Room Only"
+                }
+              />
+
+              <InfoCard
+                label="CHECK-IN"
+                value={new Date(
+                  selectedGuest.check_in_date
+                ).toLocaleDateString(
+                  "en-IN"
+                )}
+              />
+
+              <InfoCard
+                label="EXPECTED CHECK-OUT"
+                value={new Date(
+                  selectedGuest.expected_check_out_date
+                ).toLocaleDateString(
+                  "en-IN"
+                )}
+              />
             </div>
 
-
-            {/* =================================
-                NORMAL ACTIONS
-            ================================= */}
-
-            {!confirmingCheckOut && (
-
-              <div className="checkout-overlay-actions">
-
-                <button
-                  type="button"
-                  className="checkout-overlay-cancel"
-                  onClick={
-                    closeCheckOutOverlay
-                  }
-                  disabled={
-                    processingCheckOut
-                  }
-                >
-                  Cancel
-                </button>
-
-
-                <button
-                  type="button"
-                  className="checkout-overlay-primary"
-                  onClick={
-                    handleCheckOut
-                  }
-                  disabled={
-                    selectedGuest.check_in_status !==
-                      "CHECKED_IN" ||
-                    processingCheckOut
-                  }
-                >
-                  Complete Check-Out
-                </button>
-
+            {payment && (
+              <div
+                style={{
+                  marginTop: 20,
+                  padding: 18,
+                  background:
+                    "#f0fdf4",
+                  border:
+                    "1px solid #bbf7d0",
+                  borderRadius: 12,
+                }}
+              >
+                <strong>
+                  Successful Payment:
+                </strong>{" "}
+                ₹
+                {Number(
+                  payment.amount || 0
+                ).toFixed(2)}
+                {" • "}
+                {
+                  payment.payment_status
+                }
               </div>
-
             )}
-
-
-            {/* =================================
-                CONFIRMATION
-            ================================= */}
-
-            {confirmingCheckOut && (
-
-              <div className="checkout-overlay-confirmation">
-
-                <div className="checkout-confirm-icon">
-                  !
-                </div>
-
-
-                <div className="checkout-confirm-content">
-
-                  <h4>
-                    Confirm Check-Out
-                  </h4>
-
-                  <p>
-
-                    Are you sure you want to check out{" "}
-
-                    <strong>
-                      {
-                        selectedGuest.guest_name
-                      }
-                    </strong>
-
-                    {" "}from{" "}
-
-                    <strong>
-                      {
-                        selectedGuest.room_number
-                      }
-                    </strong>
-
-                    , Bed{" "}
-
-                    <strong>
-                      {
-                        selectedGuest.bed_number
-                      }
-                    </strong>
-                    ?
-
-                  </p>
-
-                  <span>
-                    The allotment will be released and the room/bed will be sent to housekeeping.
-                  </span>
-
-                </div>
-
-
-                <div className="checkout-overlay-actions">
-
-                  <button
-                    type="button"
-                    className="checkout-overlay-cancel"
-                    onClick={() =>
-                      setConfirmingCheckOut(
-                        false
-                      )
-                    }
-                    disabled={
-                      processingCheckOut
-                    }
-                  >
-                    Back
-                  </button>
-
-
-                  <button
-                    type="button"
-                    className="checkout-overlay-primary checkout-confirm-final"
-                    onClick={
-                      processCheckOut
-                    }
-                    disabled={
-                      processingCheckOut
-                    }
-                  >
-                    {processingCheckOut
-                      ? "Processing..."
-                      : "Confirm Check-Out"}
-                  </button>
-
-                </div>
-
-              </div>
-
-            )}
-
           </div>
 
-        </div>
+          {/* CHECKOUT TYPE */}
 
+          {!completedCheckout &&
+            !preCheckoutStep && (
+              <div
+                style={{
+                  background:
+                    "#fff",
+                  borderRadius:
+                    18,
+                  border:
+                    "1px solid #dbe3ec",
+                  padding: 28,
+                  marginBottom:
+                    22,
+                }}
+              >
+                <h2
+                  style={{
+                    marginTop:
+                      0,
+                  }}
+                >
+                  Select Check-Out
+                  Type
+                </h2>
+
+                <div
+                  style={{
+                    display:
+                      "grid",
+                    gridTemplateColumns:
+                      "repeat(2, 1fr)",
+                    gap: 20,
+                    marginTop:
+                      24,
+                  }}
+                >
+                  <button
+                    onClick={() =>
+                      handleCheckoutType(
+                        "SCHEDULED"
+                      )
+                    }
+                    style={{
+                      textAlign:
+                        "left",
+                      padding:
+                        24,
+                      borderRadius:
+                        14,
+                      border:
+                        checkoutType ===
+                        "SCHEDULED"
+                          ? "2px solid #1f4d36"
+                          : "1px solid #dbe3ec",
+                      background:
+                        "#fff",
+                      cursor:
+                        "pointer",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize:
+                          14,
+                        fontWeight:
+                          800,
+                        color:
+                          "#1f4d36",
+                      }}
+                    >
+                      SCHEDULED
+                      CHECK-OUT
+                    </div>
+
+                    <h3>
+                      Normal
+                      Departure
+                    </h3>
+
+                    <p
+                      style={{
+                        color:
+                          "#64748b",
+                        lineHeight:
+                          1.6,
+                      }}
+                    >
+                      No refund
+                      calculation.
+                      Final bill
+                      is generated
+                      after
+                      check-out.
+                    </p>
+                  </button>
+
+                  <button
+                    onClick={() =>
+                      handleCheckoutType(
+                        "PRE_CHECKOUT"
+                      )
+                    }
+                    style={{
+                      textAlign:
+                        "left",
+                      padding:
+                        24,
+                      borderRadius:
+                        14,
+                      border:
+                        "1px solid #fde68a",
+                      background:
+                        "#fffbeb",
+                      cursor:
+                        "pointer",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize:
+                          14,
+                        fontWeight:
+                          800,
+                        color:
+                          "#92400e",
+                      }}
+                    >
+                      PRE
+                      CHECK-OUT
+                    </div>
+
+                    <h3>
+                      Early
+                      Departure
+                    </h3>
+
+                    <p
+                      style={{
+                        color:
+                          "#64748b",
+                        lineHeight:
+                          1.6,
+                      }}
+                    >
+                      Refund
+                      calculation
+                      and refund
+                      memo are
+                      required.
+                    </p>
+                  </button>
+                </div>
+              </div>
+            )}
+
+          {/* ------------------------------------------------ */}
+          {/* PRE CHECKOUT - REFUND CALCULATION */}
+          {/* ------------------------------------------------ */}
+
+          {checkoutType ===
+            "PRE_CHECKOUT" &&
+            preCheckoutStep ===
+              "REFUND_CALCULATION" && (
+              <div
+                style={{
+                  background:
+                    "#fff",
+                  borderRadius:
+                    18,
+                  border:
+                    "1px solid #fde68a",
+                  padding: 28,
+                  marginBottom:
+                    22,
+                }}
+              >
+                <h2>
+                  Refund Calculation
+                </h2>
+
+                <div
+                  style={{
+                    marginTop:
+                      20,
+                    padding:
+                      18,
+                    background:
+                      "#f8fafc",
+                    borderRadius:
+                      10,
+                  }}
+                >
+                  <strong>
+                    Original Payment:
+                  </strong>{" "}
+                  ₹
+                  {Number(
+                    payment?.amount ||
+                      0
+                  ).toFixed(2)}
+                </div>
+
+                <label
+                  style={{
+                    display:
+                      "block",
+                    marginTop:
+                      22,
+                    fontWeight:
+                      700,
+                  }}
+                >
+                  Deduction / Retained
+                  Amount
+                </label>
+
+                <input
+                  type="number"
+                  min="0"
+                  value={
+                    refundAdjustment
+                  }
+                  onChange={(
+                    e
+                  ) =>
+                    setRefundAdjustment(
+                      Math.max(
+                        0,
+                        Number(
+                          e.target
+                            .value
+                        )
+                      )
+                    )
+                  }
+                  style={{
+                    width:
+                      "100%",
+                    boxSizing:
+                      "border-box",
+                    marginTop:
+                      8,
+                    padding:
+                      13,
+                    borderRadius:
+                      8,
+                    border:
+                      "1px solid #cbd5e1",
+                  }}
+                />
+
+                <label
+                  style={{
+                    display:
+                      "block",
+                    marginTop:
+                      20,
+                    fontWeight:
+                      700,
+                  }}
+                >
+                  Refund Reason
+                </label>
+
+                <input
+                  value={
+                    refundReason
+                  }
+                  onChange={(
+                    e
+                  ) =>
+                    setRefundReason(
+                      e.target
+                        .value
+                    )
+                  }
+                  placeholder="Example: Early departure"
+                  style={{
+                    width:
+                      "100%",
+                    boxSizing:
+                      "border-box",
+                    marginTop:
+                      8,
+                    padding:
+                      13,
+                    borderRadius:
+                      8,
+                    border:
+                      "1px solid #cbd5e1",
+                  }}
+                />
+
+                <label
+                  style={{
+                    display:
+                      "block",
+                    marginTop:
+                      20,
+                    fontWeight:
+                      700,
+                  }}
+                >
+                  Remarks
+                </label>
+
+                <textarea
+                  value={
+                    refundRemarks
+                  }
+                  onChange={(
+                    e
+                  ) =>
+                    setRefundRemarks(
+                      e.target
+                        .value
+                    )
+                  }
+                  rows={3}
+                  style={{
+                    width:
+                      "100%",
+                    boxSizing:
+                      "border-box",
+                    marginTop:
+                      8,
+                    padding:
+                      13,
+                    borderRadius:
+                      8,
+                    border:
+                      "1px solid #cbd5e1",
+                  }}
+                />
+
+                <button
+                  onClick={
+                    calculateRefund
+                  }
+                  disabled={
+                    loading ||
+                    !payment
+                  }
+                  style={{
+                    marginTop:
+                      20,
+                    padding:
+                      "13px 24px",
+                    border:
+                      "none",
+                    borderRadius:
+                      8,
+                    background:
+                      loading ||
+                      !payment
+                        ? "#94a3b8"
+                        : "#92400e",
+                    color:
+                      "#fff",
+                    fontWeight:
+                      800,
+                    cursor:
+                      loading ||
+                      !payment
+                        ? "not-allowed"
+                        : "pointer",
+                  }}
+                >
+                  {loading
+                    ? "CALCULATING..."
+                    : "CALCULATE REFUND"}
+                </button>
+              </div>
+            )}
+
+          {/* ------------------------------------------------ */}
+          {/* REFUND MEMO */}
+          {/* ------------------------------------------------ */}
+
+          {checkoutType ===
+            "PRE_CHECKOUT" &&
+            preCheckoutStep ===
+              "REFUND_MEMO" &&
+            refund && (
+              <RefundMemo
+                officerName={userName}
+                bookingId={selectedGuest?.booking_id}
+                bookingReference={selectedGuest?.booking_reference}
+                guestId={selectedGuest?.guest_id}
+                guestName={selectedGuest?.guest_name || ""}
+                bookingPersonName={
+                  selectedGuest?.booking_person_name ||
+                  selectedGuest?.guest_name ||
+                  ""
+                }
+                bookingPersonAddress={
+                  selectedGuest?.booking_person_address || ""
+                }
+                guestType={
+                  selectedGuest?.guest_type || "UNKNOWN"
+                }
+                accommodations={
+                  selectedGuest
+                    ? [
+                        {
+                          roomId: selectedGuest.room_id,
+                          roomName: selectedGuest.room_number,
+                          bedId: selectedGuest.bed_id || undefined,
+                          bedNumber:
+                            selectedGuest.bed_number || undefined,
+                        },
+                      ]
+                    : []
+                }
+                scheduledCheckOutDate={
+                  selectedGuest?.expected_check_out_date || ""
+                }
+                preCheckOutDate={
+                  new Date().toISOString().slice(0, 10)
+                }
+                totalAmount={Number(refund.original_amount)}
+                paidAmount={Number(payment?.amount || 0)}
+                adjustmentAmount={Number(refund.deduction_amount)}
+                refundableAmount={Number(refund.refund_amount)}
+                retainedAmount={
+                  Number(refund.used_amount || 0) +
+                  Number(refund.deduction_amount || 0)
+                }
+                loading={loading}
+                continueLabel="SAVE REFUND MEMO & CONTINUE →"
+                nextStageDescription="The refund memo will be saved before continuing to guest feedback and pre-checkout."
+                calculationRemarks={
+                  refundRemarks.trim() ||
+                  refundReason.trim() ||
+                  "Pre Check-Out Refund Memo"
+                }
+                onBack={() =>
+                  setPreCheckoutStep("REFUND_CALCULATION")
+                }
+                onContinue={(memo) =>
+                  void createRefundMemo(memo)
+                }
+              />
+            )}
+
+          {/* ------------------------------------------------ */}
+          {/* FINAL GUEST FEEDBACK */}
+          {/* ------------------------------------------------ */}
+
+          {preCheckoutStep === "FEEDBACK" &&
+            checkoutFeedbackContext &&
+            !completedCheckout && (
+              <CheckoutFeedback
+                context={checkoutFeedbackContext}
+                loading={loading}
+                onSubmit={(values) => void saveCheckoutFeedback(values)}
+                onSkip={() => void saveCheckoutFeedback()}
+              />
+            )}
+
+          {/* ------------------------------------------------ */}
+          {/* PRE CHECKOUT ACTUAL CHECKOUT */}
+          {/* ------------------------------------------------ */}
+
+          {checkoutType &&
+            preCheckoutStep === "CHECKOUT" &&
+            (checkoutType !== "PRE_CHECKOUT" || refundMemo) &&
+            !completedCheckout && (
+              <div
+                style={{
+                  background:
+                    "#fff",
+                  borderRadius:
+                    18,
+                  border:
+                    "1px solid #dbe3ec",
+                  padding: 28,
+                  marginBottom:
+                    22,
+                }}
+              >
+                <h2>
+                  {checkoutType === "PRE_CHECKOUT"
+                    ? "Confirm Pre Check-Out"
+                    : "Confirm Scheduled Check-Out"}
+                </h2>
+
+                {refundMemo && (
+                <div
+                  style={{
+                    padding:
+                      18,
+                    background:
+                      "#f8fafc",
+                    borderRadius:
+                      10,
+                    marginTop:
+                      18,
+                  }}
+                >
+                  <strong>
+                    Refund Memo:
+                  </strong>{" "}
+                  {
+                    refundMemo.memo_number
+                  }
+                  <br />
+                  <strong>
+                    Refund Amount:
+                  </strong>{" "}
+                  ₹
+                  {Number(
+                    refundMemo.amount
+                  ).toFixed(2)}
+                </div>
+                )}
+
+                <label
+                  style={{
+                    display:
+                      "block",
+                    marginTop:
+                      20,
+                    fontWeight:
+                      700,
+                  }}
+                >
+                  Check-Out Remarks
+                </label>
+
+                <textarea
+                  value={
+                    remarks
+                  }
+                  onChange={(
+                    e
+                  ) =>
+                    setRemarks(
+                      e.target
+                        .value
+                    )
+                  }
+                  rows={3}
+                  style={{
+                    width:
+                      "100%",
+                    boxSizing:
+                      "border-box",
+                    marginTop:
+                      8,
+                    padding:
+                      13,
+                    borderRadius:
+                      8,
+                    border:
+                      "1px solid #cbd5e1",
+                  }}
+                />
+
+                <button
+                  onClick={
+                    processCheckOut
+                  }
+                  disabled={
+                    loading
+                  }
+                  style={{
+                    marginTop:
+                      20,
+                    padding:
+                      "13px 24px",
+                    border:
+                      "none",
+                    borderRadius:
+                      8,
+                    background:
+                      loading
+                        ? "#94a3b8"
+                        : "#1f4d36",
+                    color:
+                      "#fff",
+                    fontWeight:
+                      800,
+                    cursor:
+                      loading
+                        ? "not-allowed"
+                        : "pointer",
+                  }}
+                >
+                  {loading
+                    ? "PROCESSING..."
+                    : checkoutType === "PRE_CHECKOUT"
+                      ? "CONFIRM PRE CHECK-OUT"
+                      : "CONFIRM SCHEDULED CHECK-OUT"}
+                </button>
+              </div>
+            )}
+
+          {/* ------------------------------------------------ */}
+          {/* COMPLETED CHECKOUT */}
+          {/* ------------------------------------------------ */}
+
+          {completedCheckout && (
+            <div
+              style={{
+                background:
+                  "#fff",
+                borderRadius:
+                  18,
+                border:
+                  "1px solid #bbf7d0",
+                padding: 28,
+                marginBottom:
+                  22,
+              }}
+            >
+              <h2>
+                ✓ Check-Out
+                Completed
+              </h2>
+
+              <p
+                style={{
+                  color:
+                    "#64748b",
+                }}
+              >
+                {checkoutType ===
+                "PRE_CHECKOUT"
+                  ? "Pre Check-Out"
+                  : "Scheduled Check-Out"}{" "}
+                completed
+                successfully.
+              </p>
+
+              {checkoutType ===
+                "PRE_CHECKOUT" &&
+                refundMemo && (
+                  <div
+                    style={{
+                      marginTop:
+                        18,
+                      padding:
+                        18,
+                      background:
+                        "#f0fdf4",
+                      borderRadius:
+                        10,
+                    }}
+                  >
+                    Refund Memo:{" "}
+                    <strong>
+                      {
+                        refundMemo.memo_number
+                      }
+                    </strong>
+                    <br />
+                    Refund Amount:
+                    ₹
+                    {Number(
+                      refundMemo.amount
+                    ).toFixed(2)}
+                  </div>
+                )}
+            </div>
+          )}
+
+          {/* ------------------------------------------------ */}
+          {/* SCHEDULED BILL */}
+          {/* ------------------------------------------------ */}
+
+          {completedCheckout &&
+            !generatedBill && (
+              <div
+                style={{
+                  background:
+                    "#fff",
+                  borderRadius:
+                    18,
+                  border:
+                    "1px solid #dbe3ec",
+                  padding: 28,
+                  marginBottom:
+                    22,
+                }}
+              >
+                <h2>Final Bill</h2>
+
+                {checkoutType === "PRE_CHECKOUT" && (
+                  <p>
+                    Early checkout is complete. The final bill is generated
+                    using the actual checkout date; the refund memo remains
+                    recorded separately.
+                  </p>
+                )}
+
+                <div
+                  style={{
+                    display:
+                      "grid",
+                    gridTemplateColumns:
+                      "1fr 1fr",
+                    gap: 18,
+                    marginTop:
+                      20,
+                  }}
+                >
+                  <NumberField
+                    label="Additional Retired / ESM Members"
+                    value={
+                      additionalPersonCount
+                    }
+                    onChange={
+                      setAdditionalPersonCount
+                    }
+                  />
+
+                  <NumberField
+                    label="Other Relations"
+                    value={
+                      otherRelationCount
+                    }
+                    onChange={
+                      setOtherRelationCount
+                    }
+                  />
+                </div>
+
+                {legacyPricingRequired && (
+                  <div
+                    style={{
+                      marginTop: 20,
+                      padding: 18,
+                      borderRadius: 10,
+                      border: "1px solid #fcd34d",
+                      background: "#fffbeb",
+                    }}
+                  >
+                    <strong>
+                      Historical rate required
+                    </strong>
+                    <p>
+                      This booking has no saved pricing snapshot. Do not
+                      estimate the rate or use today&apos;s rate. An ADMIN
+                      must enter the official rate and its authorization
+                      basis.
+                    </p>
+                    {userRole === "ADMIN" ? (
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "1fr 1fr",
+                          gap: 14,
+                        }}
+                      >
+                        <label>
+                          Official daily rate (₹)
+                          <input
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            value={legacyDailyRate}
+                            onChange={(event) =>
+                              setLegacyDailyRate(event.target.value)
+                            }
+                            style={{
+                              display: "block",
+                              width: "100%",
+                              marginTop: 6,
+                              padding: 10,
+                            }}
+                          />
+                        </label>
+                        <label>
+                          Guest type
+                          <select
+                            value={legacyGuestType}
+                            onChange={(event) =>
+                              setLegacyGuestType(event.target.value)
+                            }
+                            style={{
+                              display: "block",
+                              width: "100%",
+                              marginTop: 6,
+                              padding: 10,
+                            }}
+                          >
+                            <option value="ESM">ESM</option>
+                            <option value="SERVING">Serving</option>
+                            <option value="CIVILIAN">Civilian</option>
+                          </select>
+                        </label>
+                        <label
+                          style={{
+                            gridColumn: "1 / -1",
+                          }}
+                        >
+                          Official tariff / authorization basis
+                          <textarea
+                            value={legacyAuthorizationReason}
+                            onChange={(event) =>
+                              setLegacyAuthorizationReason(
+                                event.target.value
+                              )
+                            }
+                            minLength={15}
+                            maxLength={1000}
+                            rows={3}
+                            style={{
+                              display: "block",
+                              width: "100%",
+                              marginTop: 6,
+                              padding: 10,
+                              resize: "vertical",
+                            }}
+                          />
+                        </label>
+                        <label
+                          style={{
+                            gridColumn: "1 / -1",
+                            display: "flex",
+                            alignItems: "flex-start",
+                            gap: 8,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={confirmLegacyRate}
+                            onChange={(event) =>
+                              setConfirmLegacyRate(event.target.checked)
+                            }
+                          />
+                          I confirm this is the officially authorized
+                          historical rate and the information above is
+                          accurate.
+                        </label>
+                      </div>
+                    ) : (
+                      <p>
+                        Only an ADMIN can authorize the historical rate.
+                        Please ask an ADMIN to complete bill generation.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <button
+                  onClick={() =>
+                    completedCheckout &&
+                    generateBill(
+                      completedCheckout.id
+                    )
+                  }
+                  disabled={
+                    loading ||
+                    (legacyPricingRequired &&
+                      userRole === "ADMIN" &&
+                      (!legacyDailyRate ||
+                        Number(legacyDailyRate) <= 0 ||
+                        legacyAuthorizationReason.trim().length < 15 ||
+                        !confirmLegacyRate))
+                  }
+                  style={{
+                    marginTop:
+                      22,
+                    padding:
+                      "13px 24px",
+                    border:
+                      "none",
+                    borderRadius:
+                      8,
+                    background:
+                      loading ||
+                      (legacyPricingRequired &&
+                        userRole === "ADMIN" &&
+                        (!legacyDailyRate ||
+                          Number(legacyDailyRate) <= 0 ||
+                          legacyAuthorizationReason.trim().length < 15 ||
+                          !confirmLegacyRate))
+                        ? "#94a3b8"
+                        : "#1f4d36",
+                    color:
+                      "#fff",
+                    fontWeight:
+                      800,
+                    cursor:
+                      loading ||
+                      (legacyPricingRequired &&
+                        userRole === "ADMIN" &&
+                        (!legacyDailyRate ||
+                          Number(legacyDailyRate) <= 0 ||
+                          legacyAuthorizationReason.trim().length < 15 ||
+                          !confirmLegacyRate))
+                        ? "not-allowed"
+                        : "pointer",
+                  }}
+                >
+                  {loading
+                    ? "GENERATING..."
+                    : legacyPricingRequired &&
+                        userRole === "ADMIN"
+                      ? "AUTHORIZE RATE & GENERATE FINAL BILL"
+                      : "GENERATE FINAL BILL"}
+                </button>
+              </div>
+            )}
+
+          {/* ------------------------------------------------ */}
+          {/* BILL DETAILS */}
+          {/* ------------------------------------------------ */}
+
+          {generatedBill &&
+            showBillSection && (
+              <div
+                ref={billPreviewRef}
+                className="final-bill-preview"
+                style={{
+                  background:
+                    "#fff",
+                  borderRadius:
+                    18,
+                  border:
+                    "1px solid #dbe3ec",
+                  padding: 30,
+                  marginBottom:
+                    22,
+                }}
+              >
+                <div className="final-bill-toolbar">
+                  <h2>Final Bill Preview</h2>
+                  <button
+                    onClick={printBill}
+                    className="final-bill-print-button"
+                  >
+                    PRINT / SAVE PDF
+                  </button>
+                </div>
+
+                <article className="final-bill-printable">
+                  <header className="final-bill-header">
+                    <div>
+                      <div className="final-bill-organization">
+                        ESM REST HOUSE
+                      </div>
+                      <div>Government Rest House</div>
+                    </div>
+                    <div className="final-bill-title">
+                      <h1>FINAL BILL</h1>
+                      <div>
+                        Bill No:{" "}
+                        <strong>{generatedBill.bill_number}</strong>
+                      </div>
+                      <div>
+                        Bill Date:{" "}
+                        {formatBillDate(generatedBill.bill_date)}
+                      </div>
+                    </div>
+                  </header>
+
+                  <section className="final-bill-parties">
+                    <div>
+                      <h2>GUEST DETAILS</h2>
+                      <p>
+                        <strong>{generatedBill.guest_name || selectedGuest?.guest_name || "—"}</strong>
+                      </p>
+                      <p>Mobile: {generatedBill.mobile_number || selectedGuest?.mobile_number || "—"}</p>
+                      <p>Booking Ref: {generatedBill.booking_reference || selectedGuest?.booking_reference || "—"}</p>
+                    </div>
+                    <div>
+                      <h2>STAY DETAILS</h2>
+                      <p>
+                        Room: <strong>{generatedBill.room_number || selectedGuest?.room_number || "—"}</strong>
+                        {generatedBill.bed_number
+                          ? ` / Bed ${generatedBill.bed_number}`
+                          : ""}
+                      </p>
+                      <p>Category: {generatedBill.category_name || "—"}</p>
+                      <p>
+                        Stay: {formatBillDate(generatedBill.check_in_date)} –{" "}
+                        {formatBillDate(generatedBill.check_out_time)}
+                      </p>
+                      <p>Billable days: {generatedBill.stay_days ?? "—"}</p>
+                    </div>
+                  </section>
+
+                  <table className="final-bill-table">
+                    <thead>
+                      <tr>
+                        <th>Description</th>
+                        <th>Calculation</th>
+                        <th>Amount (₹)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>Accommodation — {generatedBill.accommodation_type || generatedBill.category_name || "Room"}</td>
+                        <td>
+                          {generatedBill.stay_days ?? "—"} day(s) × ₹
+                          {Number(generatedBill.accommodation_rate || 0).toFixed(2)}
+                        </td>
+                        <td>{Number(generatedBill.room_charges).toFixed(2)}</td>
+                      </tr>
+                      {(generatedBill.additional_person_count || 0) > 0 && (
+                        <tr>
+                          <td>Additional ESM / retired members</td>
+                          <td>
+                            {generatedBill.additional_person_count} × ₹
+                            {Number(generatedBill.additional_person_rate || 0).toFixed(2)}
+                          </td>
+                          <td>{Number(generatedBill.additional_person_charges || 0).toFixed(2)}</td>
+                        </tr>
+                      )}
+                      {(generatedBill.other_relation_count || 0) > 0 && (
+                        <tr>
+                          <td>Other relations</td>
+                          <td>
+                            {generatedBill.other_relation_count} × ₹
+                            {Number(generatedBill.other_relation_rate || 0).toFixed(2)}
+                          </td>
+                          <td>{Number(generatedBill.other_relation_charges || 0).toFixed(2)}</td>
+                        </tr>
+                      )}
+                      <tr>
+                        <td>Food charges</td>
+                        <td>—</td>
+                        <td>{Number(generatedBill.food_charges).toFixed(2)}</td>
+                      </tr>
+                      <tr>
+                        <td>Discount</td>
+                        <td>—</td>
+                        <td>−{Number(generatedBill.discount_amount).toFixed(2)}</td>
+                      </tr>
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <th colSpan={2}>TOTAL PAYABLE</th>
+                        <th>₹{Number(generatedBill.total_amount).toFixed(2)}</th>
+                      </tr>
+                    </tfoot>
+                  </table>
+
+                  <div className="final-bill-payment">
+                    Payment status: <strong>{generatedBill.payment_status || "PENDING"}</strong>
+                    {generatedBill.payment_method
+                      ? ` · Method: ${generatedBill.payment_method}`
+                      : ""}
+                  </div>
+
+                  {generatedBill.pricing_source ===
+                    "ADMIN_AUTHORIZED_LEGACY_RATE" && (
+                      <div className="final-bill-legacy-note">
+                        Historical rate authorized: ₹
+                        {Number(generatedBill.legacy_daily_rate).toFixed(2)} per day.
+                        {generatedBill.legacy_authorization_reason && (
+                          <> Authorization basis: {generatedBill.legacy_authorization_reason}</>
+                        )}
+                      </div>
+                    )}
+
+                  <footer className="final-bill-signatures">
+                    <span>Guest Signature</span>
+                    <span>Prepared By</span>
+                    <span>Authorized Signature</span>
+                  </footer>
+                </article>
+
+                <div
+                  style={{
+                    marginTop:
+                      24,
+                    padding:
+                      20,
+                    background:
+                      "#f0fdf4",
+                    borderRadius:
+                      12,
+                    fontWeight:
+                      700,
+                  }}
+                >
+                  {checkoutType === "PRE_CHECKOUT"
+                    ? "Pre Check-Out → Refund Memo → Final Bill → WhatsApp Feedback"
+                    : "Scheduled Check-Out → Final Bill → WhatsApp Feedback"}
+                </div>
+
+                <FeedbackButtons
+                  loading={
+                    loading
+                  }
+                  notification={
+                    feedbackNotification
+                  }
+                  guestName={
+                    selectedGuest?.guest_name || ""
+                  }
+                  mobile={
+                    selectedGuest?.mobile_number || ""
+                  }
+                  bookingReference={
+                    selectedGuest?.booking_reference || ""
+                  }
+                  onOpenWhatsApp={
+                    openWhatsAppFeedback
+                  }
+                  onPending={() =>
+                    createWhatsAppFeedback(
+                      "PENDING"
+                    )
+                  }
+                  onSent={() =>
+                    createWhatsAppFeedback(
+                      "SENT"
+                    )
+                  }
+                  onSkipped={() =>
+                    createWhatsAppFeedback(
+                      "SKIPPED"
+                    )
+                  }
+                />
+              </div>
+            )}
+
+          {/* ------------------------------------------------ */}
+          {/* PRE CHECKOUT WHATSAPP */}
+          {/* ------------------------------------------------ */}
+
+          {completedCheckout &&
+            checkoutType ===
+              "PRE_CHECKOUT" &&
+            preCheckoutStep ===
+              "WHATSAPP" && (
+              <div
+                style={{
+                  background:
+                    "#fff",
+                  borderRadius:
+                    18,
+                  border:
+                    "1px solid #bbf7d0",
+                  padding: 30,
+                }}
+              >
+                <h2>
+                  WhatsApp Feedback
+                </h2>
+
+                <div
+                  style={{
+                    marginTop:
+                      20,
+                    padding:
+                      20,
+                    background:
+                      "#f0fdf4",
+                    borderRadius:
+                      12,
+                    lineHeight:
+                      1.9,
+                  }}
+                >
+                  ✓ Pre Check-Out
+                  <br />
+                  ✓ Refund
+                  Calculation
+                  <br />
+                  ✓ Refund Memo:{" "}
+                  {
+                    refundMemo?.memo_number
+                  }
+                  <br />
+                  ✓ Refund Amount:
+                  ₹
+                  {Number(
+                    refundMemo?.amount ||
+                      0
+                  ).toFixed(2)}
+                  <br />
+                  ✓ Check-Out
+                  completed
+                </div>
+
+                <FeedbackButtons
+                  loading={
+                    loading
+                  }
+                  notification={
+                    feedbackNotification
+                  }
+                  guestName={
+                    selectedGuest?.guest_name || ""
+                  }
+                  mobile={
+                    selectedGuest?.mobile_number || ""
+                  }
+                  bookingReference={
+                    selectedGuest?.booking_reference || ""
+                  }
+                  onOpenWhatsApp={
+                    openWhatsAppFeedback
+                  }
+                  onPending={() =>
+                    createWhatsAppFeedback(
+                      "PENDING"
+                    )
+                  }
+                  onSent={() =>
+                    createWhatsAppFeedback(
+                      "SENT"
+                    )
+                  }
+                  onSkipped={() =>
+                    createWhatsAppFeedback(
+                      "SKIPPED"
+                    )
+                  }
+                />
+              </div>
+            )}
+        </>
       )}
-
-
-      {/* =====================================
-          RESULT MODAL
-      ===================================== */}
-
-      {modal && (
-
-        <AppModal
-          type={
-            modal.type
-          }
-          title={
-            modal.title
-          }
-          message={
-            modal.message
-          }
-          confirmText="OK"
-          showCancel={false}
-          onClose={
-            closeModal
-          }
-        />
-
-      )}
-
-    </main>
+    </div>
   );
-}
+};
+
+const formatBillDate = (value?: string) => {
+  if (!value) {
+    return "—";
+  }
+
+  const datePart = value.slice(0, 10);
+  const [year, month, day] = datePart.split("-");
+  if (!year || !month || !day) {
+    return value;
+  }
+
+  return `${day}/${month}/${year}`;
+};
+
+// ---------------------------------------------------------
+// INFO CARD
+// ---------------------------------------------------------
+
+const InfoCard: React.FC<{
+  label: string;
+  value: string;
+}> = ({
+  label,
+  value,
+}) => (
+  <div
+    style={{
+      background:
+        "#f8fafc",
+      borderRadius:
+        10,
+      padding: 16,
+    }}
+  >
+    <div
+      style={{
+        fontSize: 11,
+        color:
+          "#64748b",
+        fontWeight:
+          800,
+      }}
+    >
+      {label}
+    </div>
+
+    <div
+      style={{
+        marginTop: 6,
+        fontWeight: 700,
+      }}
+    >
+      {value}
+    </div>
+  </div>
+);
+
+// ---------------------------------------------------------
+// NUMBER FIELD
+// ---------------------------------------------------------
+
+const NumberField: React.FC<{
+  label: string;
+  value: number;
+  onChange: (
+    value: number
+  ) => void;
+}> = ({
+  label,
+  value,
+  onChange,
+}) => (
+  <div>
+    <label
+      style={{
+        display:
+          "block",
+        fontWeight:
+          700,
+        marginBottom:
+          8,
+      }}
+    >
+      {label}
+    </label>
+
+    <input
+      type="number"
+      min="0"
+      value={value}
+      onChange={(e) =>
+        onChange(
+          Math.max(
+            0,
+            Number(
+              e.target.value
+            )
+          )
+        )
+      }
+      style={{
+        width:
+          "100%",
+        boxSizing:
+          "border-box",
+        padding: 13,
+        borderRadius:
+          8,
+        border:
+          "1px solid #cbd5e1",
+      }}
+    />
+  </div>
+);
+
+// ---------------------------------------------------------
+// FEEDBACK BUTTONS
+// ---------------------------------------------------------
+
+const FeedbackButtons: React.FC<{
+  loading: boolean;
+  notification:
+    | FeedbackNotification
+    | null;
+  guestName: string;
+  mobile: string;
+  bookingReference: string;
+  onOpenWhatsApp: () => void;
+  onPending: () => void;
+  onSent: () => void;
+  onSkipped: () => void;
+}> = ({
+  loading,
+  notification,
+  guestName,
+  mobile,
+  bookingReference,
+  onOpenWhatsApp,
+  onPending,
+  onSent,
+  onSkipped,
+}) => (
+  <div
+    style={{
+      marginTop: 24,
+      padding: 20,
+      background:
+        "#f8fafc",
+      borderRadius: 12,
+    }}
+  >
+    <h3>
+      WhatsApp Feedback
+    </h3>
+
+    <p>
+      Open WhatsApp with a prefilled message for{" "}
+      {guestName || "the guest"} ({mobile || "no mobile number"}).
+      After sending it in WhatsApp, select MARK SENT here. Sending is not
+      automatic.
+      {bookingReference ? ` Booking ${bookingReference}.` : ""}
+    </p>
+
+    {notification && (
+      <div
+        style={{
+          marginBottom:
+            16,
+          color:
+            "#047857",
+          fontWeight:
+            700,
+        }}
+      >
+        Notification Status:{" "}
+        {
+          notification.notification_status
+        }
+      </div>
+    )}
+
+    <div
+      style={{
+        display:
+          "flex",
+        gap: 12,
+        flexWrap:
+          "wrap",
+      }}
+    >
+      <button
+        type="button"
+        onClick={onOpenWhatsApp}
+        disabled={loading || !mobile}
+        style={{
+          padding: "11px 18px",
+          border: "none",
+          borderRadius: 8,
+          background: "#15803d",
+          color: "#fff",
+          fontWeight: 800,
+          cursor: mobile ? "pointer" : "not-allowed",
+        }}
+      >
+        OPEN WHATSAPP
+      </button>
+
+      <button
+        onClick={
+          onPending
+        }
+        disabled={
+          loading
+        }
+        style={{
+          padding:
+            "11px 18px",
+          borderRadius:
+            8,
+          border:
+            "1px solid #cbd5e1",
+          background:
+            "#fff",
+          fontWeight:
+            700,
+          cursor:
+            "pointer",
+        }}
+      >
+        CREATE PENDING
+      </button>
+
+      <button
+        onClick={
+          onSent
+        }
+        disabled={
+          loading
+        }
+        style={{
+          padding:
+            "11px 18px",
+          border:
+            "none",
+          borderRadius:
+            8,
+          background:
+            "#1f4d36",
+          color:
+            "#fff",
+          fontWeight:
+            800,
+          cursor:
+            "pointer",
+        }}
+      >
+        MARK SENT
+      </button>
+
+      <button
+        onClick={
+          onSkipped
+        }
+        disabled={
+          loading
+        }
+        style={{
+          padding:
+            "11px 18px",
+          border:
+            "none",
+          borderRadius:
+            8,
+          background:
+            "#64748b",
+          color:
+            "#fff",
+          fontWeight:
+            800,
+          cursor:
+            "pointer",
+        }}
+      >
+        SKIP FEEDBACK
+      </button>
+    </div>
+  </div>
+);
 
 export default CheckOut;

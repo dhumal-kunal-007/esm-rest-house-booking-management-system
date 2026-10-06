@@ -72,6 +72,14 @@ router.post(
     "/",
     async (req: Request, res: Response) => {
 
+        if (req.authUser?.role !== "ADMIN") {
+            return res.status(403).json({
+                success: false,
+                message:
+                    "Only an ADMIN can create users.",
+            });
+        }
+
         const client =
             await pool.connect();
 

@@ -5,61 +5,30 @@ import {
 } from "react";
 
 import "../App.css";
-
-
-/* =========================================
-   TYPES
-========================================= */
+import { apiFetch } from "../api";
+import { useLanguage } from "../i18n/LanguageContext";
 
 interface HousekeepingTask {
-
   id: string;
-
   task_status: string;
-
   room_id: string;
-
   room_number: string;
-
   bed_id: string | null;
-
   bed_number: number | null;
-
   guest_id: string | null;
-
   guest_name: string | null;
-
   allotted_by_name: string | null;
-
   assigned_to_name: string | null;
-
   created_at: string;
-
   updated_at: string | null;
-
 }
-
-
-/* =========================================
-   PROPS
-========================================= */
 
 interface HousekeepingProps {
-
   userId: string;
-
   userName: string;
-
   userRole: string;
-
   onBack: () => void;
-
 }
-
-
-/* =========================================
-   HOUSEKEEPING
-========================================= */
 
 function Housekeeping({
   userId,
@@ -67,50 +36,35 @@ function Housekeeping({
   userRole,
   onBack,
 }: HousekeepingProps) {
+  const { language, setLanguage } = useLanguage();
 
+  const [tasks, setTasks] =
+    useState<HousekeepingTask[]>([]);
 
-  /* =========================================
-     STATE
-  ========================================= */
+  const [loading, setLoading] =
+    useState(true);
 
-  const [
-    tasks,
-    setTasks,
-  ] = useState<HousekeepingTask[]>([]);
+  const [actionLoading, setActionLoading] =
+    useState<string | null>(null);
 
+  const [errorMessage, setErrorMessage] =
+    useState("");
 
-  const [
-    loading,
-    setLoading,
-  ] = useState(true);
+  const [successMessage, setSuccessMessage] =
+    useState("");
 
+  const [confirmation, setConfirmation] =
+    useState<{
+      task: HousekeepingTask;
+      action: "assign" | "complete";
+    } | null>(null);
 
-  const [
-    actionLoading,
-    setActionLoading,
-  ] = useState<string | null>(null);
+  const isMarathi = language === "mr";
 
-
-  const [
-    errorMessage,
-    setErrorMessage,
-  ] = useState("");
-
-
-  const [
-    successMessage,
-    setSuccessMessage,
-  ] = useState("");
-
-
-  const [
-    confirmation,
-    setConfirmation,
-  ] = useState<{
-    task: HousekeepingTask;
-    action: "assign" | "complete";
-  } | null>(null);
-
+  const tr = (
+    english: string,
+    marathi: string
+  ) => (isMarathi ? marathi : english);
 
   /* =========================================
      LOAD TASKS
@@ -118,104 +72,77 @@ function Housekeeping({
 
   const loadTasks = useCallback(
     async () => {
-
       setLoading(true);
-
       setErrorMessage("");
 
       try {
+        const response = await apiFetch(
+          "http://localhost:5000/api/housekeeping/tasks"
+        );
 
-        const response =
-          await fetch(
-            "http://localhost:5000/api/housekeeping/tasks"
-          );
-
-
-        const data =
-          await response.json();
-
+        const data = await response.json();
 
         if (!response.ok) {
-
           throw new Error(
             data.message ||
-            "Unable to load housekeeping tasks."
+              tr(
+                "Unable to load housekeeping tasks.",
+                "हाऊसकीपिंगची कामे लोड करता आली नाहीत."
+              )
           );
-
         }
-
 
         setTasks(
           Array.isArray(data.tasks)
             ? data.tasks
             : []
         );
-
       } catch (error) {
-
         console.error(
           "Housekeeping task loading error:",
           error
         );
 
-
         setErrorMessage(
           error instanceof Error
             ? error.message
-            : "Unable to load housekeeping tasks. Please make sure the backend is running."
+            : tr(
+                "Unable to load housekeeping tasks. Please make sure the backend is running.",
+                "हाऊसकीपिंगची कामे लोड करता आली नाहीत. कृपया बॅकएंड सुरू आहे याची खात्री करा."
+              )
         );
-
       } finally {
-
         setLoading(false);
-
       }
-
     },
-    []
+    [isMarathi]
   );
-
 
   /* =========================================
      INITIAL LOAD
   ========================================= */
 
   useEffect(() => {
-
     loadTasks();
-
   }, [loadTasks]);
 
-
   /* =========================================
-     CLEAR MESSAGES
+     CLEAR SUCCESS MESSAGE
   ========================================= */
 
   useEffect(() => {
-
     if (!successMessage) {
-
       return;
-
     }
 
-
-    const timer =
-      window.setTimeout(() => {
-
-        setSuccessMessage("");
-
-      }, 4000);
-
+    const timer = window.setTimeout(() => {
+      setSuccessMessage("");
+    }, 4000);
 
     return () => {
-
       window.clearTimeout(timer);
-
     };
-
   }, [successMessage]);
-
 
   /* =========================================
      REQUEST ACTION
@@ -225,147 +152,117 @@ function Housekeeping({
     task: HousekeepingTask,
     action: "assign" | "complete"
   ) => {
-
     setErrorMessage("");
-
     setSuccessMessage("");
 
     setConfirmation({
       task,
       action,
     });
-
   };
-
 
   /* =========================================
      PERFORM ACTION
   ========================================= */
 
   const performAction = async () => {
-
     if (!confirmation) {
-
       return;
-
     }
 
+    const { task, action } =
+      confirmation;
 
-    const {
-      task,
-      action,
-    } = confirmation;
-
-
-    setActionLoading(
-      task.id
-    );
-
-
+    setActionLoading(task.id);
     setErrorMessage("");
-
     setSuccessMessage("");
 
-
     try {
-
       const endpoint =
         action === "assign"
           ? `http://localhost:5000/api/housekeeping/${task.id}/assign`
           : `http://localhost:5000/api/housekeeping/${task.id}/complete`;
 
-
       const body =
         action === "assign"
           ? {
-              assigned_to:
-                userId,
+              assigned_to: userId,
             }
           : {
-              completed_by:
-                userId,
+              completed_by: userId,
             };
 
-
-      const response =
-        await fetch(
-          endpoint,
-          {
-            method: "POST",
-
-            headers: {
-              "Content-Type":
-                "application/json",
-            },
-
-            body:
-              JSON.stringify(
-                body
-              ),
-          }
-        );
-
+      const response = await apiFetch(
+        endpoint,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify(body),
+        }
+      );
 
       const data =
         await response.json();
 
-
       if (!response.ok) {
-
         throw new Error(
           data.message ||
-          "The housekeeping action could not be completed."
+            tr(
+              "The housekeeping action could not be completed.",
+              "हाऊसकीपिंगची प्रक्रिया पूर्ण करता आली नाही."
+            )
         );
-
       }
 
+      setConfirmation(null);
 
-      setConfirmation(
-        null
-      );
-
+      const roomText =
+        task.bed_number
+          ? `${tr("Room", "खोली")} ${
+              task.room_number
+            }, ${tr("Bed", "बेड")} ${
+              task.bed_number
+            }`
+          : `${tr("Room", "खोली")} ${
+              task.room_number
+            }`;
 
       if (action === "assign") {
-
         setSuccessMessage(
-          `Room ${task.room_number}${task.bed_number ? `, Bed ${task.bed_number}` : ""} has been assigned to housekeeping.`
+          isMarathi
+            ? `${roomText} हाऊसकीपिंगकडे सोपवण्यात आली आहे.`
+            : `${roomText} has been assigned to housekeeping.`
         );
-
       } else {
-
         setSuccessMessage(
-          `Cleaning completed for Room ${task.room_number}${task.bed_number ? `, Bed ${task.bed_number}` : ""}. The bed is now available.`
+          isMarathi
+            ? `${roomText} ची साफसफाई पूर्ण झाली आहे. बेड आता उपलब्ध आहे.`
+            : `Cleaning completed for ${roomText}. The bed is now available.`
         );
-
       }
 
-
       await loadTasks();
-
     } catch (error) {
-
       console.error(
         "Housekeeping action error:",
         error
       );
 
-
       setErrorMessage(
         error instanceof Error
           ? error.message
-          : "Unable to complete the housekeeping action."
+          : tr(
+              "Unable to complete the housekeeping action.",
+              "हाऊसकीपिंगची प्रक्रिया पूर्ण करता आली नाही."
+            )
       );
-
     } finally {
-
-      setActionLoading(
-        null
-      );
-
+      setActionLoading(null);
     }
-
   };
-
 
   /* =========================================
      STATUS LABEL
@@ -374,34 +271,29 @@ function Housekeeping({
   const getStatusLabel = (
     status: string
   ) => {
-
-    switch (
-      status.toUpperCase()
-    ) {
-
+    switch (status.toUpperCase()) {
       case "NEEDS CLEANING":
-
-        return "WAITING FOR HOUSEKEEPING";
-
+        return tr(
+          "WAITING FOR HOUSEKEEPING",
+          "हाऊसकीपिंगच्या प्रतीक्षेत"
+        );
 
       case "CLEANING":
-
-        return "CLEANING IN PROGRESS";
-
+        return tr(
+          "CLEANING IN PROGRESS",
+          "साफसफाई सुरू आहे"
+        );
 
       case "CLEARED":
-
-        return "CLEANING COMPLETED";
-
+        return tr(
+          "CLEANING COMPLETED",
+          "साफसफाई पूर्ण"
+        );
 
       default:
-
         return status;
-
     }
-
   };
-
 
   /* =========================================
      STATUS CLASS
@@ -410,34 +302,20 @@ function Housekeeping({
   const getStatusClass = (
     status: string
   ) => {
-
-    switch (
-      status.toUpperCase()
-    ) {
-
+    switch (status.toUpperCase()) {
       case "NEEDS CLEANING":
-
         return "housekeeping-status-needs";
 
-
       case "CLEANING":
-
         return "housekeeping-status-cleaning";
 
-
       case "CLEARED":
-
         return "housekeeping-status-cleared";
 
-
       default:
-
         return "housekeeping-status-default";
-
     }
-
   };
-
 
   /* =========================================
      DATE FORMAT
@@ -446,31 +324,20 @@ function Housekeeping({
   const formatDate = (
     value: string
   ) => {
-
     if (!value) {
-
       return "—";
-
     }
 
-
-    const date =
-      new Date(value);
-
+    const date = new Date(value);
 
     if (
-      Number.isNaN(
-        date.getTime()
-      )
+      Number.isNaN(date.getTime())
     ) {
-
       return value;
-
     }
 
-
     return date.toLocaleString(
-      "en-IN",
+      isMarathi ? "mr-IN" : "en-IN",
       {
         day: "2-digit",
         month: "short",
@@ -479,9 +346,7 @@ function Housekeeping({
         minute: "2-digit",
       }
     );
-
   };
-
 
   /* =========================================
      COUNTS
@@ -494,14 +359,12 @@ function Housekeeping({
         "NEEDS CLEANING"
     ).length;
 
-
   const cleaningCount =
     tasks.filter(
       (task) =>
         task.task_status.toUpperCase() ===
         "CLEANING"
     ).length;
-
 
   const completedCount =
     tasks.filter(
@@ -510,96 +373,104 @@ function Housekeeping({
         "CLEARED"
     ).length;
 
-
   /* =========================================
      RENDER
   ========================================= */
 
   return (
-
     <main className="dashboard-screen">
-
-
-      {/* =====================================
-          HEADER
-      ===================================== */}
+      {/* HEADER */}
 
       <header className="dashboard-header">
-
         <div className="dashboard-brand">
-
           <button
             type="button"
             className="housekeeping-back-button"
             onClick={onBack}
           >
-            ← Back
+            ← {tr("Back", "मागे")}
           </button>
-
 
           <div className="dashboard-logo">
             ESM
           </div>
 
-
           <div>
-
-            <h1>
-              ESM REST HOUSE
-            </h1>
+            <h1>ESM REST HOUSE</h1>
 
             <p>
-              Housekeeping Management
+              {tr(
+                "Housekeeping Management",
+                "हाऊसकीपिंग व्यवस्थापन"
+              )}
             </p>
-
           </div>
-
         </div>
-
 
         <div className="dashboard-user">
-
           <div className="user-info">
+            <strong>{userName}</strong>
 
-            <strong>
-              {userName}
-            </strong>
-
-            <span>
-              {userRole}
-            </span>
-
+            <span>{userRole}</span>
           </div>
 
-        </div>
+          <div className="language-switcher">
+            <button
+              type="button"
+              className={`language-button ${
+                language === "en"
+                  ? "active"
+                  : ""
+              }`}
+              onClick={() =>
+                setLanguage("en")
+              }
+            >
+              EN
+            </button>
 
+            <span className="language-divider">
+              |
+            </span>
+
+            <button
+              type="button"
+              className={`language-button ${
+                language === "mr"
+                  ? "active"
+                  : ""
+              }`}
+              onClick={() =>
+                setLanguage("mr")
+              }
+            >
+              मराठी
+            </button>
+          </div>
+        </div>
       </header>
 
-
-      {/* =====================================
-          CONTENT
-      ===================================== */}
+      {/* CONTENT */}
 
       <section className="dashboard-content">
-
-
         {/* PAGE TITLE */}
 
         <div className="dashboard-title">
-
           <div>
-
             <h2>
-              Housekeeping
+              {tr(
+                "Housekeeping",
+                "हाऊसकीपिंग"
+              )}
             </h2>
 
             <p>
-              Manage rooms and beds waiting for
-              cleaning after guest checkout.
+              {tr(
+                "Manage rooms and beds waiting for cleaning after guest checkout.",
+                "अतिथीच्या चेक-आउटनंतर साफसफाईच्या प्रतीक्षेत असलेल्या खोल्या आणि बेड व्यवस्थापित करा."
+              )}
             </p>
-
           </div>
-
 
           <button
             type="button"
@@ -608,594 +479,605 @@ function Housekeeping({
             disabled={loading}
           >
             {loading
-              ? "Refreshing..."
-              : "Refresh"}
+              ? tr(
+                  "Refreshing...",
+                  "रिफ्रेश होत आहे..."
+                )
+              : tr(
+                  "Refresh",
+                  "रिफ्रेश"
+                )}
           </button>
-
         </div>
 
-
-        {/* ===================================
-            MESSAGE
-        =================================== */}
+        {/* MESSAGE */}
 
         {errorMessage && (
-
           <div className="housekeeping-message housekeeping-error">
-
             <strong>
-              Action Required
+              {tr(
+                "Action Required",
+                "कृती आवश्यक"
+              )}
             </strong>
 
             <span>
               {errorMessage}
             </span>
-
           </div>
-
         )}
 
-
         {successMessage && (
-
           <div className="housekeeping-message housekeeping-success">
-
             <strong>
-              Success
+              {tr(
+                "Success",
+                "यशस्वी"
+              )}
             </strong>
 
             <span>
               {successMessage}
             </span>
-
           </div>
-
         )}
 
-
-        {/* ===================================
-            SUMMARY CARDS
-        =================================== */}
+        {/* SUMMARY CARDS */}
 
         <div className="dashboard-cards">
-
-
           <div className="stat-card">
-
             <span>
-              Waiting for Housekeeping
+              {tr(
+                "Waiting for Housekeeping",
+                "हाऊसकीपिंगच्या प्रतीक्षेत"
+              )}
             </span>
 
             <strong>
               {waitingCount}
             </strong>
-
           </div>
 
-
           <div className="stat-card">
-
             <span>
-              Cleaning in Progress
+              {tr(
+                "Cleaning in Progress",
+                "साफसफाई सुरू आहे"
+              )}
             </span>
 
             <strong>
               {cleaningCount}
             </strong>
-
           </div>
 
-
           <div className="stat-card">
-
             <span>
-              Cleaning Completed
+              {tr(
+                "Cleaning Completed",
+                "साफसफाई पूर्ण"
+              )}
             </span>
 
             <strong>
               {completedCount}
             </strong>
-
           </div>
 
-
           <div className="stat-card">
-
             <span>
-              Total Tasks
+              {tr(
+                "Total Tasks",
+                "एकूण कामे"
+              )}
             </span>
 
             <strong>
               {tasks.length}
             </strong>
-
           </div>
-
         </div>
 
-
-        {/* ===================================
-            HOUSEKEEPING PANEL
-        =================================== */}
+        {/* HOUSEKEEPING PANEL */}
 
         <div className="dashboard-panel housekeeping-panel">
-
           <div className="panel-heading">
-
             <div>
-
               <h3>
-                Housekeeping Tasks
+                {tr(
+                  "Housekeeping Tasks",
+                  "हाऊसकीपिंगची कामे"
+                )}
               </h3>
 
               <p>
-                Rooms and beds requiring
-                housekeeping attention.
+                {tr(
+                  "Rooms and beds requiring housekeeping attention.",
+                  "हाऊसकीपिंगच्या कामाची आवश्यकता असलेल्या खोल्या आणि बेड."
+                )}
               </p>
-
             </div>
-
           </div>
-
 
           {/* LOADING */}
 
           {loading ? (
-
             <div className="housekeeping-empty">
-
-              <div className="housekeeping-spinner">
-              </div>
+              <div className="housekeeping-spinner" />
 
               <p>
-                Loading housekeeping tasks...
+                {tr(
+                  "Loading housekeeping tasks...",
+                  "हाऊसकीपिंगची कामे लोड होत आहेत..."
+                )}
               </p>
-
             </div>
-
           ) : tasks.length === 0 ? (
-
             /* NO TASKS */
 
             <div className="housekeeping-empty">
-
               <div className="housekeeping-empty-icon">
                 ✓
               </div>
 
               <h4>
-                No Pending Housekeeping Tasks
+                {tr(
+                  "No Pending Housekeeping Tasks",
+                  "हाऊसकीपिंगची कोणतीही प्रलंबित कामे नाहीत"
+                )}
               </h4>
 
               <p>
-                All rooms and beds are currently
-                clear for use.
+                {tr(
+                  "All rooms and beds are currently clear for use.",
+                  "सर्व खोल्या आणि बेड सध्या वापरासाठी उपलब्ध आहेत."
+                )}
               </p>
-
             </div>
-
           ) : (
-
             /* TASK LIST */
 
             <div className="housekeeping-table-wrapper">
-
               <div className="housekeeping-table">
-
-
                 {/* TABLE HEADER */}
 
                 <div className="housekeeping-row housekeeping-table-header">
-
                   <span>
-                    Room / Bed
+                    {tr(
+                      "Room / Bed",
+                      "खोली / बेड"
+                    )}
                   </span>
 
                   <span>
-                    Guest
+                    {tr(
+                      "Guest",
+                      "अतिथी"
+                    )}
                   </span>
 
                   <span>
-                    Status
+                    {tr(
+                      "Status",
+                      "स्थिती"
+                    )}
                   </span>
 
                   <span>
-                    Task Created
+                    {tr(
+                      "Task Created",
+                      "काम तयार केले"
+                    )}
                   </span>
 
                   <span>
-                    Action
+                    {tr(
+                      "Action",
+                      "कृती"
+                    )}
                   </span>
-
                 </div>
-
 
                 {/* TASKS */}
 
-                {tasks.map(
-                  (task) => (
+                {tasks.map((task) => (
+                  <div
+                    key={task.id}
+                    className="housekeeping-row"
+                  >
+                    {/* ROOM / BED */}
 
-                    <div
-                      key={
-                        task.id
-                      }
-                      className="housekeeping-row"
-                    >
+                    <div className="housekeeping-room-cell">
+                      <strong>
+                        {task.room_number}
+                      </strong>
 
-
-                      {/* ROOM / BED */}
-
-                      <div className="housekeeping-room-cell">
-
-                        <strong>
-                          {task.room_number}
-                        </strong>
-
-                        {task.bed_number ? (
-
-                          <span>
-                            Bed {task.bed_number}
-                          </span>
-
-                        ) : (
-
-                          <span>
-                            Room
-                          </span>
-
-                        )}
-
-                      </div>
-
-
-                      {/* GUEST */}
-
-                      <div className="housekeeping-guest-cell">
-
-                        <strong>
-                          {task.guest_name ||
-                            "Guest information unavailable"}
-                        </strong>
-
-                        {task.allotted_by_name && (
-
-                          <span>
-                            Allotted by{" "}
-                            {task.allotted_by_name}
-                          </span>
-
-                        )}
-
-                      </div>
-
-
-                      {/* STATUS */}
-
-                      <div>
-
-                        <span
-                          className={`housekeeping-status ${getStatusClass(
-                            task.task_status
-                          )}`}
-                        >
-                          {getStatusLabel(
-                            task.task_status
+                      {task.bed_number ? (
+                        <span>
+                          {tr(
+                            "Bed",
+                            "बेड"
+                          )}{" "}
+                          {task.bed_number}
+                        </span>
+                      ) : (
+                        <span>
+                          {tr(
+                            "Room",
+                            "खोली"
                           )}
                         </span>
-
-
-                        {task.assigned_to_name && (
-
-                          <small className="housekeeping-assigned-text">
-
-                            Assigned to{" "}
-                            {task.assigned_to_name}
-
-                          </small>
-
-                        )}
-
-                      </div>
-
-
-                      {/* DATE */}
-
-                      <div className="housekeeping-date-cell">
-
-                        {formatDate(
-                          task.created_at
-                        )}
-
-                      </div>
-
-
-                      {/* ACTION */}
-
-                      <div className="housekeeping-action-cell">
-
-
-                        {task.task_status.toUpperCase() ===
-                          "NEEDS CLEANING" && (
-
-                          <button
-                            type="button"
-                            className="housekeeping-action-button housekeeping-assign-button"
-                            onClick={() =>
-                              requestAction(
-                                task,
-                                "assign"
-                              )
-                            }
-                            disabled={
-                              actionLoading ===
-                              task.id
-                            }
-                          >
-                            {actionLoading ===
-                            task.id
-                              ? "Processing..."
-                              : "Assign to Housekeeping"}
-                          </button>
-
-                        )}
-
-
-                        {task.task_status.toUpperCase() ===
-                          "CLEANING" && (
-
-                          <button
-                            type="button"
-                            className="housekeeping-action-button housekeeping-complete-button"
-                            onClick={() =>
-                              requestAction(
-                                task,
-                                "complete"
-                              )
-                            }
-                            disabled={
-                              actionLoading ===
-                              task.id
-                            }
-                          >
-                            {actionLoading ===
-                            task.id
-                              ? "Processing..."
-                              : "Cleaning Completed"}
-                          </button>
-
-                        )}
-
-
-                        {task.task_status.toUpperCase() ===
-                          "CLEARED" && (
-
-                          <span className="housekeeping-completed-label">
-                            ✓ Completed
-                          </span>
-
-                        )}
-
-                      </div>
-
+                      )}
                     </div>
 
-                  )
-                )}
+                    {/* GUEST */}
 
+                    <div className="housekeeping-guest-cell">
+                      <strong>
+                        {task.guest_name ||
+                          tr(
+                            "Guest information unavailable",
+                            "अतिथीची माहिती उपलब्ध नाही"
+                          )}
+                      </strong>
+
+                      {task.allotted_by_name && (
+                        <span>
+                          {tr(
+                            "Allotted by",
+                            "अलॉटमेंट करणारे"
+                          )}{" "}
+                          {
+                            task.allotted_by_name
+                          }
+                        </span>
+                      )}
+                    </div>
+
+                    {/* STATUS */}
+
+                    <div>
+                      <span
+                        className={`housekeeping-status ${getStatusClass(
+                          task.task_status
+                        )}`}
+                      >
+                        {getStatusLabel(
+                          task.task_status
+                        )}
+                      </span>
+
+                      {task.task_status.toUpperCase() ===
+                        "CLEANING" &&
+                        task.assigned_to_name && (
+                        <small className="housekeeping-assigned-text">
+                          {tr(
+                            "Assigned to",
+                            "सोपवले आहे"
+                          )}{" "}
+                          {
+                            task.assigned_to_name
+                          }
+                        </small>
+                      )}
+                    </div>
+
+                    {/* DATE */}
+
+                    <div className="housekeeping-date-cell">
+                      {formatDate(
+                        task.created_at
+                      )}
+                    </div>
+
+                    {/* ACTION */}
+
+                    <div className="housekeeping-action-cell">
+                      {task.task_status.toUpperCase() ===
+                        "NEEDS CLEANING" && (
+                        <button
+                          type="button"
+                          className="housekeeping-action-button housekeeping-assign-button"
+                          onClick={() =>
+                            requestAction(
+                              task,
+                              "assign"
+                            )
+                          }
+                          disabled={
+                            actionLoading ===
+                            task.id
+                          }
+                        >
+                          {actionLoading ===
+                          task.id
+                            ? tr(
+                                "Processing...",
+                                "प्रक्रिया सुरू आहे..."
+                              )
+                            : tr(
+                                "Assign to Housekeeping",
+                                "हाऊसकीपिंगकडे सोपवा"
+                              )}
+                        </button>
+                      )}
+
+                      {task.task_status.toUpperCase() ===
+                        "CLEANING" && (
+                        <button
+                          type="button"
+                          className="housekeeping-action-button housekeeping-complete-button"
+                          onClick={() =>
+                            requestAction(
+                              task,
+                              "complete"
+                            )
+                          }
+                          disabled={
+                            actionLoading ===
+                            task.id
+                          }
+                        >
+                          {actionLoading ===
+                          task.id
+                            ? tr(
+                                "Processing...",
+                                "प्रक्रिया सुरू आहे..."
+                              )
+                            : tr(
+                                "Cleaning Completed",
+                                "साफसफाई पूर्ण"
+                              )}
+                        </button>
+                      )}
+
+                      {task.task_status.toUpperCase() ===
+                        "CLEARED" && (
+                        <span className="housekeeping-completed-label">
+                          ✓{" "}
+                          {tr(
+                            "Completed",
+                            "पूर्ण"
+                          )}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
-
             </div>
-
           )}
-
         </div>
 
-
-        {/* ===================================
-            WORKFLOW INFORMATION
-        =================================== */}
+        {/* WORKFLOW INFORMATION */}
 
         <div className="dashboard-panel housekeeping-workflow-panel">
-
           <h3>
-            Housekeeping Workflow
+            {tr(
+              "Housekeeping Workflow",
+              "हाऊसकीपिंग प्रक्रिया"
+            )}
           </h3>
 
-
           <div className="housekeeping-workflow">
-
-
             <div className="workflow-step">
-
               <div className="workflow-number">
                 1
               </div>
 
               <div>
-
                 <strong>
-                  Guest Checks Out
+                  {tr(
+                    "Guest Checks Out",
+                    "अतिथी चेक-आउट करतो"
+                  )}
                 </strong>
 
                 <p>
-                  The room/bed becomes
-                  <b> RED — Needs Cleaning</b>.
+                  {tr(
+                    "The room/bed becomes",
+                    "खोली/बेड"
+                  )}{" "}
+                  <b>
+                    {tr(
+                      "RED — Needs Cleaning",
+                      "लाल — साफसफाई आवश्यक"
+                    )}
+                  </b>
+                  .
                 </p>
-
               </div>
-
             </div>
-
 
             <div className="workflow-arrow">
               →
             </div>
 
-
             <div className="workflow-step">
-
               <div className="workflow-number">
                 2
               </div>
 
               <div>
-
                 <strong>
-                  Assign to Housekeeping
+                  {tr(
+                    "Assign to Housekeeping",
+                    "हाऊसकीपिंगकडे सोपवा"
+                  )}
                 </strong>
 
                 <p>
-                  Receptionist changes the
-                  status to <b>YELLOW — Cleaning
-                  in Progress</b>.
+                  {tr(
+                    "Receptionist changes the status to",
+                    "रिसेप्शनिस्ट स्थिती बदलून"
+                  )}{" "}
+                  <b>
+                    {tr(
+                      "YELLOW — Cleaning in Progress",
+                      "पिवळा — साफसफाई सुरू"
+                    )}
+                  </b>
+                  .
                 </p>
-
               </div>
-
             </div>
-
 
             <div className="workflow-arrow">
               →
             </div>
 
-
             <div className="workflow-step">
-
               <div className="workflow-number">
                 3
               </div>
 
               <div>
-
                 <strong>
-                  Cleaning Completed
+                  {tr(
+                    "Cleaning Completed",
+                    "साफसफाई पूर्ण"
+                  )}
                 </strong>
 
                 <p>
-                  Receptionist completes the
-                  task and the bed becomes
-                  <b> GREEN — Available</b>.
+                  {tr(
+                    "Receptionist completes the task and the bed becomes",
+                    "रिसेप्शनिस्ट काम पूर्ण केल्यानंतर बेड"
+                  )}{" "}
+                  <b>
+                    {tr(
+                      "GREEN — Available",
+                      "हिरवा — उपलब्ध"
+                    )}
+                  </b>
+                  .
                 </p>
-
               </div>
-
             </div>
-
           </div>
-
         </div>
-
       </section>
 
-
-      {/* =====================================
-          CONFIRMATION PANEL
-      ===================================== */}
+      {/* CONFIRMATION PANEL */}
 
       {confirmation && (
-
         <div className="housekeeping-confirmation-overlay">
-
           <div className="housekeeping-confirmation-card">
-
-
             <div className="housekeeping-confirmation-icon">
               ?
             </div>
 
-
             <h3>
-
-              {confirmation.action === "assign"
-                ? "Assign Room to Housekeeping?"
-                : "Complete Cleaning?"}
-
+              {confirmation.action ===
+              "assign"
+                ? tr(
+                    "Assign Room to Housekeeping?",
+                    "खोली हाऊसकीपिंगकडे सोपवायची आहे का?"
+                  )
+                : tr(
+                    "Complete Cleaning?",
+                    "साफसफाई पूर्ण करायची आहे का?"
+                  )}
             </h3>
 
-
             <p>
-
-              {confirmation.action === "assign"
-                ? `Room ${confirmation.task.room_number}${
-                    confirmation.task.bed_number
-                      ? `, Bed ${confirmation.task.bed_number}`
-                      : ""
-                  } will be marked as Cleaning in Progress.`
-                : `Room ${confirmation.task.room_number}${
-                    confirmation.task.bed_number
-                      ? `, Bed ${confirmation.task.bed_number}`
-                      : ""
-                  } will be marked as Available after cleaning is completed.`}
-
+              {confirmation.action ===
+              "assign"
+                ? isMarathi
+                  ? `खोली ${confirmation.task.room_number}${
+                      confirmation.task
+                        .bed_number
+                        ? `, बेड ${confirmation.task.bed_number}`
+                        : ""
+                    } ची स्थिती "साफसफाई सुरू" अशी केली जाईल.`
+                  : `Room ${confirmation.task.room_number}${
+                      confirmation.task
+                        .bed_number
+                        ? `, Bed ${confirmation.task.bed_number}`
+                        : ""
+                    } will be marked as Cleaning in Progress.`
+                : isMarathi
+                  ? `खोली ${confirmation.task.room_number}${
+                      confirmation.task
+                        .bed_number
+                        ? `, बेड ${confirmation.task.bed_number}`
+                        : ""
+                    } ची साफसफाई पूर्ण झाल्यानंतर ती उपलब्ध केली जाईल.`
+                  : `Room ${confirmation.task.room_number}${
+                      confirmation.task
+                        .bed_number
+                        ? `, Bed ${confirmation.task.bed_number}`
+                        : ""
+                    } will be marked as Available after cleaning is completed.`}
             </p>
 
-
             <div className="housekeeping-confirmation-details">
-
               <div>
-
                 <span>
-                  Room
+                  {tr(
+                    "Room",
+                    "खोली"
+                  )}
                 </span>
 
                 <strong>
-                  {confirmation.task.room_number}
+                  {
+                    confirmation.task
+                      .room_number
+                  }
                 </strong>
-
               </div>
 
-
               {confirmation.task.bed_number && (
-
                 <div>
-
                   <span>
-                    Bed
+                    {tr(
+                      "Bed",
+                      "बेड"
+                    )}
                   </span>
 
                   <strong>
-                    {confirmation.task.bed_number}
+                    {
+                      confirmation.task
+                        .bed_number
+                    }
                   </strong>
-
                 </div>
-
               )}
 
-
               <div>
-
                 <span>
-                  Guest
+                  {tr(
+                    "Guest",
+                    "अतिथी"
+                  )}
                 </span>
 
                 <strong>
-                  {confirmation.task.guest_name ||
+                  {confirmation.task
+                    .guest_name ||
                     "—"}
                 </strong>
-
               </div>
-
             </div>
 
-
             <div className="housekeeping-confirmation-actions">
-
               <button
                 type="button"
                 className="housekeeping-cancel-button"
                 onClick={() =>
-                  setConfirmation(
-                    null
-                  )
+                  setConfirmation(null)
                 }
                 disabled={
                   actionLoading !== null
                 }
               >
-                Cancel
+                {tr(
+                  "Cancel",
+                  "रद्द करा"
+                )}
               </button>
-
 
               <button
                 type="button"
@@ -1208,25 +1090,27 @@ function Housekeeping({
                 }
               >
                 {actionLoading
-                  ? "Processing..."
-                  : confirmation.action === "assign"
-                    ? "Assign to Housekeeping"
-                    : "Confirm Cleaning Completed"}
+                  ? tr(
+                      "Processing...",
+                      "प्रक्रिया सुरू आहे..."
+                    )
+                  : confirmation.action ===
+                    "assign"
+                    ? tr(
+                        "Assign to Housekeeping",
+                        "हाऊसकीपिंगकडे सोपवा"
+                      )
+                    : tr(
+                        "Confirm Cleaning Completed",
+                        "साफसफाई पूर्ण झाल्याची पुष्टी करा"
+                      )}
               </button>
-
             </div>
-
           </div>
-
         </div>
-
       )}
-
     </main>
-
   );
-
 }
-
 
 export default Housekeeping;

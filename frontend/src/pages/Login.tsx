@@ -4,11 +4,17 @@ import {
 } from "react";
 
 import "../App.css";
+import {
+  apiFetch,
+  saveAuthToken,
+} from "../api";
 
 import type {
   User,
   UserRole,
 } from "../App";
+
+import { useLanguage } from "../i18n/LanguageContext";
 
 
 interface LoginProps {
@@ -19,6 +25,7 @@ interface LoginProps {
 interface LoginResponse {
   success: boolean;
   message: string;
+  token?: string;
 
   user?: {
     id: string;
@@ -87,9 +94,6 @@ const roles: {
 const SAVED_USERNAME_KEY =
   "esm-saved-username";
 
-const SAVED_PASSWORD_KEY =
-  "esm-saved-password";
-
 const REMEMBER_LOGIN_KEY =
   "esm-remember-login";
 
@@ -104,6 +108,13 @@ const SAVED_ROLE_KEY =
 function Login({
   onLogin,
 }: LoginProps) {
+
+  const {
+    language,
+    setLanguage,
+    t,
+  } = useLanguage();
+
 
   const [
     selectedRole,
@@ -148,6 +159,43 @@ function Login({
 
 
   /* =========================================
+     TRANSLATION HELPERS
+  ========================================= */
+
+  const roleLabels: Record<UserRole, string> = {
+    ADMIN:
+      language === "mr"
+        ? "प्रशासक"
+        : "Administrator",
+
+    DY_DIRECTOR:
+      language === "mr"
+        ? "उपसंचालक"
+        : "Deputy Director",
+
+    SUPERINTENDENT:
+      language === "mr"
+        ? "अधीक्षक"
+        : "Superintendent",
+
+    WELFARE_ORGANISER:
+      language === "mr"
+        ? "कल्याण संघटक"
+        : "Welfare Organizer",
+
+    OLC_REST_HOUSE_MANAGER:
+      language === "mr"
+        ? "OLC विश्रामगृह व्यवस्थापक"
+        : "OLC Rest House Manager",
+
+    RECEPTIONIST:
+      language === "mr"
+        ? "स्वागत कक्ष अधिकारी"
+        : "Receptionist",
+  };
+
+
+  /* =========================================
      LOAD SAVED LOGIN
   ========================================= */
 
@@ -156,11 +204,6 @@ function Login({
     const savedUsername =
       localStorage.getItem(
         SAVED_USERNAME_KEY
-      );
-
-    const savedPassword =
-      localStorage.getItem(
-        SAVED_PASSWORD_KEY
       );
 
     const savedRemember =
@@ -190,16 +233,9 @@ function Login({
     }
 
 
-    if (
-      savedPassword &&
-      savedRemember === "true"
-    ) {
-
-      setPassword(
-        savedPassword
-      );
-
-    }
+    localStorage.removeItem(
+      "esm-saved-password"
+    );
 
 
     if (
@@ -232,10 +268,6 @@ function Login({
       );
 
       localStorage.removeItem(
-        SAVED_PASSWORD_KEY
-      );
-
-      localStorage.removeItem(
         SAVED_ROLE_KEY
       );
 
@@ -251,12 +283,6 @@ function Login({
     localStorage.setItem(
       SAVED_USERNAME_KEY,
       username.trim()
-    );
-
-
-    localStorage.setItem(
-      SAVED_PASSWORD_KEY,
-      password
     );
 
 
@@ -294,7 +320,7 @@ function Login({
     if (!selectedRole) {
 
       setError(
-        "Please select your login role."
+        t("login", "selectRoleError")
       );
 
       return;
@@ -308,7 +334,7 @@ function Login({
     if (!username.trim()) {
 
       setError(
-        "Please enter your username."
+        t("login", "usernameError")
       );
 
       return;
@@ -322,7 +348,7 @@ function Login({
     if (!password) {
 
       setError(
-        "Please enter your password."
+        t("login", "passwordError")
       );
 
       return;
@@ -335,7 +361,7 @@ function Login({
     try {
 
       const response =
-        await fetch(
+        await apiFetch(
           "http://localhost:5000/api/auth/login",
           {
             method: "POST",
@@ -371,7 +397,7 @@ function Login({
       } catch {
 
         setError(
-          "The server returned an invalid response."
+          t("login", "invalidServerResponse")
         );
 
         return;
@@ -385,12 +411,13 @@ function Login({
       if (
         !response.ok ||
         !data.success ||
-        !data.user
+        !data.user ||
+        !data.token
       ) {
 
         setError(
           data.message ||
-          "Invalid username or password."
+          t("login", "invalidCredentials")
         );
 
         return;
@@ -407,12 +434,13 @@ function Login({
       ) {
 
         setError(
-          "The selected role does not match this account."
+          t("login", "roleMismatch")
         );
 
         return;
       }
 
+      saveAuthToken(data.token);
 
       /* -------------------------------
          SAVE LOGIN
@@ -463,7 +491,7 @@ function Login({
 
 
       setError(
-        "Unable to connect to the backend server. Please make sure the backend is running."
+        t("login", "backendConnectionError")
       );
 
     } finally {
@@ -482,7 +510,7 @@ function Login({
   const handleForgotPassword = () => {
 
     setError(
-      "Please contact the Administrator to reset your password."
+      t("login", "forgotPasswordMessage")
     );
 
   };
@@ -529,7 +557,9 @@ function Login({
             <div>
 
               <span className="login-brand-mini">
-                GOVERNMENT REST HOUSE
+                {language === "mr"
+                  ? "शासकीय विश्रामगृह"
+                  : "GOVERNMENT REST HOUSE"}
               </span>
 
               <h1>
@@ -544,20 +574,31 @@ function Login({
           <div className="login-brand-main">
 
             <span className="login-brand-overline">
-              SECURE MANAGEMENT PORTAL
+              {language === "mr"
+                ? "सुरक्षित व्यवस्थापन पोर्टल"
+                : "SECURE MANAGEMENT PORTAL"}
             </span>
 
             <h2>
-              Accommodation
-              <br />
-              made simple.
+              {language === "mr" ? (
+                <>
+                  निवास व्यवस्था
+                  <br />
+                  आता सोपी.
+                </>
+              ) : (
+                <>
+                  Accommodation
+                  <br />
+                  made simple.
+                </>
+              )}
             </h2>
 
             <p>
-              Manage bookings, rooms, beds,
-              guest arrivals, departures and
-              housekeeping from one secure
-              platform.
+              {language === "mr"
+                ? "बुकिंग, खोल्या, बेड, पाहुण्यांचे आगमन, निर्गमन आणि हाऊसकीपिंग एका सुरक्षित प्रणालीतून व्यवस्थापित करा."
+                : "Manage bookings, rooms, beds, guest arrivals, departures and housekeeping from one secure platform."}
             </p>
 
 
@@ -572,12 +613,15 @@ function Login({
                 <div>
 
                   <strong>
-                    Centralized Management
+                    {language === "mr"
+                      ? "केंद्रीकृत व्यवस्थापन"
+                      : "Centralized Management"}
                   </strong>
 
                   <small>
-                    One system for the entire
-                    rest house operation.
+                    {language === "mr"
+                      ? "संपूर्ण विश्रामगृहाच्या कामकाजासाठी एकच प्रणाली."
+                      : "One system for the entire rest house operation."}
                   </small>
 
                 </div>
@@ -594,12 +638,15 @@ function Login({
                 <div>
 
                   <strong>
-                    Role-Based Access
+                    {language === "mr"
+                      ? "भूमिकेनुसार प्रवेश"
+                      : "Role-Based Access"}
                   </strong>
 
                   <small>
-                    Access is controlled according
-                    to your official responsibility.
+                    {language === "mr"
+                      ? "आपल्या अधिकृत जबाबदारीनुसार प्रवेश नियंत्रित केला जातो."
+                      : "Access is controlled according to your official responsibility."}
                   </small>
 
                 </div>
@@ -616,12 +663,15 @@ function Login({
                 <div>
 
                   <strong>
-                    Live Room Management
+                    {language === "mr"
+                      ? "थेट खोली व्यवस्थापन"
+                      : "Live Room Management"}
                   </strong>
 
                   <small>
-                    Monitor room and bed availability
-                    in real time.
+                    {language === "mr"
+                      ? "खोली आणि बेडची उपलब्धता रिअल टाइममध्ये पहा."
+                      : "Monitor room and bed availability in real time."}
                   </small>
 
                 </div>
@@ -636,11 +686,15 @@ function Login({
           <div className="login-brand-footer">
 
             <span>
-              ESM Rest House • Pune
+              {language === "mr"
+                ? "ESM विश्रामगृह • पुणे"
+                : "ESM Rest House • Pune"}
             </span>
 
             <span>
-              Authorized Personnel
+              {language === "mr"
+                ? "अधिकृत कर्मचारी"
+                : "Authorized Personnel"}
             </span>
 
           </div>
@@ -655,6 +709,48 @@ function Login({
         <section className="modern-login-panel">
 
 
+          {/* LANGUAGE SWITCHER */}
+
+          <div
+            className="language-switcher"
+            aria-label="Language selection"
+          >
+
+            <button
+              type="button"
+              className={`language-button ${
+                language === "en"
+                  ? "active"
+                  : ""
+              }`}
+              onClick={() =>
+                setLanguage("en")
+              }
+            >
+              English
+            </button>
+
+            <span className="language-divider">
+              |
+            </span>
+
+            <button
+              type="button"
+              className={`language-button ${
+                language === "mr"
+                  ? "active"
+                  : ""
+              }`}
+              onClick={() =>
+                setLanguage("mr")
+              }
+            >
+              मराठी
+            </button>
+
+          </div>
+
+
           <div className="login-panel-header">
 
             <div className="login-panel-icon">
@@ -664,16 +760,21 @@ function Login({
             <div>
 
               <span>
-                SECURE ACCESS
+                {language === "mr"
+                  ? "सुरक्षित प्रवेश"
+                  : "SECURE ACCESS"}
               </span>
 
               <h2>
-                Welcome back
+                {language === "mr"
+                  ? "पुन्हा स्वागत आहे"
+                  : "Welcome back"}
               </h2>
 
               <p>
-                Sign in to continue to the
-                management portal.
+                {language === "mr"
+                  ? "व्यवस्थापन पोर्टलवर जाण्यासाठी साइन इन करा."
+                  : "Sign in to continue to the management portal."}
               </p>
 
             </div>
@@ -699,7 +800,9 @@ function Login({
               <div>
 
                 <strong>
-                  Unable to sign in
+                  {language === "mr"
+                    ? "साइन इन करता आले नाही"
+                    : "Unable to sign in"}
                 </strong>
 
                 <p>
@@ -728,7 +831,9 @@ function Login({
             <div className="modern-form-group">
 
               <label htmlFor="role">
-                Login As
+                {language === "mr"
+                  ? "लॉगिन भूमिका"
+                  : "Login As"}
               </label>
 
               <div className="modern-input-wrapper">
@@ -754,7 +859,9 @@ function Login({
                 >
 
                   <option value="">
-                    Select your official role
+                    {language === "mr"
+                      ? "आपली अधिकृत भूमिका निवडा"
+                      : "Select your official role"}
                   </option>
 
                   {roles.map(
@@ -769,7 +876,9 @@ function Login({
                         }
                       >
                         {
-                          role.label
+                          roleLabels[
+                            role.value
+                          ]
                         }
                       </option>
 
@@ -790,7 +899,9 @@ function Login({
               <div className="modern-label-row">
 
                 <label htmlFor="username">
-                  Username
+                  {language === "mr"
+                    ? "वापरकर्तानाव"
+                    : "Username"}
                 </label>
 
                 {username && (
@@ -813,7 +924,9 @@ function Login({
                     }}
                     tabIndex={-1}
                   >
-                    Clear
+                    {language === "mr"
+                      ? "पुसून टाका"
+                      : "Clear"}
                   </button>
 
                 )}
@@ -830,7 +943,11 @@ function Login({
                 <input
                   id="username"
                   type="text"
-                  placeholder="Enter your username"
+                  placeholder={
+                    language === "mr"
+                      ? "आपले वापरकर्तानाव प्रविष्ट करा"
+                      : "Enter your username"
+                  }
                   value={username}
                   onChange={(event) => {
 
@@ -857,7 +974,9 @@ function Login({
             <div className="modern-form-group">
 
               <label htmlFor="password">
-                Password
+                {language === "mr"
+                  ? "पासवर्ड"
+                  : "Password"}
               </label>
 
 
@@ -874,7 +993,11 @@ function Login({
                       ? "text"
                       : "password"
                   }
-                  placeholder="Enter your password"
+                  placeholder={
+                    language === "mr"
+                      ? "आपला पासवर्ड प्रविष्ट करा"
+                      : "Enter your password"
+                  }
                   value={password}
                   onChange={(event) => {
 
@@ -903,14 +1026,30 @@ function Login({
                   disabled={isLoading}
                   aria-label={
                     showPassword
-                      ? "Hide password"
-                      : "Show password"
+                      ? (
+                        language === "mr"
+                          ? "पासवर्ड लपवा"
+                          : "Hide password"
+                      )
+                      : (
+                        language === "mr"
+                          ? "पासवर्ड दाखवा"
+                          : "Show password"
+                      )
                   }
                 >
 
                   {showPassword
-                    ? "Hide"
-                    : "Show"}
+                    ? (
+                      language === "mr"
+                        ? "लपवा"
+                        : "Hide"
+                    )
+                    : (
+                      language === "mr"
+                        ? "दाखवा"
+                        : "Show"
+                    )}
 
                 </button>
 
@@ -947,10 +1086,6 @@ function Login({
                       );
 
                       localStorage.removeItem(
-                        SAVED_PASSWORD_KEY
-                      );
-
-                      localStorage.removeItem(
                         SAVED_ROLE_KEY
                       );
 
@@ -970,7 +1105,9 @@ function Login({
                 </span>
 
                 <span>
-                  Remember me
+                  {language === "mr"
+                    ? "मला लक्षात ठेवा"
+                    : "Remember me"}
                 </span>
 
               </label>
@@ -984,7 +1121,9 @@ function Login({
                 }
                 disabled={isLoading}
               >
-                Forgot password?
+                {language === "mr"
+                  ? "पासवर्ड विसरलात?"
+                  : "Forgot password?"}
               </button>
 
             </div>
@@ -1001,8 +1140,9 @@ function Login({
                 </span>
 
                 <p>
-                  Your login details will be
-                  remembered on this computer.
+                  {language === "mr"
+                    ? "आपले लॉगिन तपशील या संगणकावर लक्षात ठेवले जातील."
+                    : "Your login details will be remembered on this computer."}
                 </p>
 
               </div>
@@ -1025,7 +1165,9 @@ function Login({
                   <span className="login-spinner" />
 
                   <span>
-                    Signing in...
+                    {language === "mr"
+                      ? "साइन इन होत आहे..."
+                      : "Signing in..."}
                   </span>
 
                 </>
@@ -1035,7 +1177,9 @@ function Login({
                 <>
 
                   <span>
-                    Sign in securely
+                    {language === "mr"
+                      ? "सुरक्षितपणे साइन इन करा"
+                      : "Sign in securely"}
                   </span>
 
                   <span className="login-button-arrow">
@@ -1062,7 +1206,9 @@ function Login({
 
               <span className="security-dot" />
 
-              Secure connection
+              {language === "mr"
+                ? "सुरक्षित कनेक्शन"
+                : "Secure connection"}
 
             </div>
 
@@ -1084,13 +1230,22 @@ function Login({
 
       <div className="modern-login-copyright">
 
-        ESM REST HOUSE • PUNE
+        {language === "mr"
+          ? "ESM विश्रामगृह • पुणे"
+          : "ESM REST HOUSE • PUNE"}
+
         <span />
-        BOOKING &amp; MANAGEMENT SYSTEM
+
+        {language === "mr"
+          ? "बुकिंग आणि व्यवस्थापन प्रणाली"
+          : "BOOKING & MANAGEMENT SYSTEM"}
+
         <span />
+
         © 2026
 
       </div>
+
 
     </main>
 

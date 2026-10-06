@@ -8,6 +8,85 @@ import { pool } from "../config/db.js";
 
 const router = Router();
 
+/* =========================================================
+   HELPER
+   GET THE SUCCESSFUL PAYMENT STATUS ALLOWED BY DATABASE
+
+   Do not hard-code SUCCESS. Read the payments table CHECK
+   constraint and use the successful status it allows.
+========================================================= */
+
+async function getSuccessfulPaymentStatus(
+  client: any
+): Promise<string> {
+
+  const result =
+    await client.query(
+      `
+      SELECT
+        pg_get_constraintdef(oid) AS definition
+      FROM pg_constraint
+      WHERE
+        conname = 'payments_status_check'
+        AND conrelid = 'payments'::regclass
+      LIMIT 1
+      `
+    );
+
+  if (
+    result.rowCount === 0
+  ) {
+    throw new Error(
+      "payments_status_check constraint was not found."
+    );
+  }
+
+  const definition =
+    String(
+      result.rows[0].definition
+    );
+
+  const matches =
+    definition.match(
+      /'([^']+)'/g
+    ) || [];
+
+  const allowedStatuses =
+    matches.map(
+      (value: string) =>
+        value.substring(
+          1,
+          value.length - 1
+        )
+    );
+
+  const preferredStatuses = [
+    "SUCCESS",
+    "COMPLETED",
+    "PAID",
+    "RECEIVED",
+  ];
+
+  const successfulStatus =
+    preferredStatuses.find(
+      (status) =>
+        allowedStatuses.includes(
+          status
+        )
+    );
+
+  if (
+    successfulStatus
+  ) {
+    return successfulStatus;
+  }
+
+  throw new Error(
+    `No successful payment status was found in payments_status_check. Allowed statuses: ${allowedStatuses.join(", ")}`
+  );
+}
+
+
 
 /* =========================================================
    ALLOCATION MODEL
@@ -697,12 +776,12 @@ router.post(
 
 
       if (
-        requestedCheckOut <
+        requestedCheckOut <=
         requestedCheckIn
       ) {
 
         throw new Error(
-          "Booking check-out date cannot be before the check-in date."
+          "Booking check-out date must be after the check-in date."
         );
 
       }
@@ -2791,6 +2870,1006 @@ router.get(
 
   }
 );
+/* =========================================================
+   POST /api/allotments/lock
 
+   ROOM LOCK
 
+   APPROVED
+      ↓
+   PAYMENT
+      ↓
+   INVOICE
+      ↓
+   ROOM LOCKED
+      ↓
+   CHECK-IN
+
+   Uses booking_acceptances as the source of the
+   accepted room / bed selection.
+
+   IMPORTANT:
+   - Does NOT create approval records.
+   - Does NOT use ROOM_LOCKED as allotment_status.
+   - Actual allotment_status remains ALLOTTED.
+   - AC / NAC / VIP = whole room, bed_id NULL.
+   - DM / HALL = selected bed.
+========================================================= */
+
+router.post(
+  "/lock",
+  async (
+    req: Request,
+    res: Response
+  ) => {
+
+    const {
+      booking_id,
+      allotted_by,
+      remarks = null,
+    } = req.body;
+
+    if (!booking_id) {
+      return res.status(400).json({
+        message: "Booking ID is required.",
+      });
+    }
+
+    if (!allotted_by) {
+      return res.status(400).json({
+        message: "Allotting user ID is required.",
+      });
+    }
+
+    const client = await pool.connect();
+
+    try {
+
+      await client.query("BEGIN");
+
+      /* ===================================
+         BOOKING
+      =================================== */
+
+      const bookingResult =
+        await client.query(
+          `
+          SELECT
+            id,
+            booking_reference,
+            booking_status,
+            booking_type,
+            approval_status,
+            acceptance_status,
+            check_in_date,
+            expected_check_out_date
+          FROM bookings
+          WHERE id = $1
+          FOR UPDATE
+          `,
+          [booking_id]
+        );
+
+      if (bookingResult.rowCount === 0) {
+        throw new Error(
+          "Booking not found."
+        );
+      }
+
+      const booking =
+        bookingResult.rows[0];
+
+      /* ===================================
+         APPROVAL
+      =================================== */
+
+      if (
+        booking.approval_status !==
+        "APPROVED"
+      ) {
+        throw new Error(
+          "Booking must be approved before room locking."
+        );
+      }
+
+      /* ===================================
+         ACCEPTANCE
+      =================================== */
+
+      if (
+        booking.acceptance_status !==
+        "ACCEPTED"
+      ) {
+        throw new Error(
+          "Booking acceptance must be completed before room locking."
+        );
+      }
+
+      /* ===================================
+         DATES
+      =================================== */
+
+      if (
+        !booking.check_in_date ||
+        !booking.expected_check_out_date
+      ) {
+        throw new Error(
+          "Booking check-in and check-out dates are required."
+        );
+      }
+
+      if (
+        booking.expected_check_out_date <=
+        booking.check_in_date
+      ) {
+        throw new Error(
+          "Booking check-out date must be after check-in date."
+        );
+      }
+
+      /* ===================================
+         USER
+      =================================== */
+
+      const userResult =
+        await client.query(
+          `
+          SELECT
+            u.id,
+            u.full_name,
+            u.is_active,
+            r.role_name
+          FROM users u
+          INNER JOIN roles r
+            ON r.id = u.role_id
+          WHERE u.id = $1
+          `,
+          [allotted_by]
+        );
+
+      if (userResult.rowCount === 0) {
+        throw new Error(
+          "Allotting user was not found."
+        );
+      }
+
+      const user =
+        userResult.rows[0];
+
+      if (!user.is_active) {
+        throw new Error(
+          "The allotting user's account is inactive."
+        );
+      }
+
+      /* ===================================
+         PAYMENT
+      =================================== */
+
+      const successfulPaymentStatus =
+        await getSuccessfulPaymentStatus(
+          client
+        );
+
+      const paymentResult =
+        await client.query(
+          `
+          SELECT
+            id,
+            amount,
+            payment_status,
+            payment_method,
+            transaction_number,
+            payment_date
+          FROM payments
+          WHERE
+            booking_id = $1
+            AND payment_status = $2
+          ORDER BY created_at DESC
+          LIMIT 1
+          `,
+          [
+            booking_id,
+            successfulPaymentStatus,
+          ]
+        );
+
+      if (paymentResult.rowCount === 0) {
+        throw new Error(
+          "Successful payment is required before room locking."
+        );
+      }
+
+      const payment =
+        paymentResult.rows[0];
+
+      /* ===================================
+         INVOICE
+      =================================== */
+
+      const invoiceResult =
+        await client.query(
+          `
+          SELECT
+            bi.id,
+            bi.invoice_number,
+            bi.invoice_type,
+            bi.invoice_date,
+            bi.amount,
+            bi.payment_id
+          FROM booking_invoices bi
+          INNER JOIN payments p
+            ON p.id = bi.payment_id
+           AND p.booking_id = bi.booking_id
+          WHERE
+            bi.booking_id = $1
+            AND p.id = $2
+            AND p.payment_status = $3
+          ORDER BY bi.created_at DESC
+          LIMIT 1
+          `,
+          [
+            booking_id,
+            payment.id,
+            successfulPaymentStatus,
+          ]
+        );
+
+      if (invoiceResult.rowCount === 0) {
+        throw new Error(
+          "Invoice must be generated before room locking."
+        );
+      }
+
+      const invoice =
+        invoiceResult.rows[0];
+
+      if (
+        Number(invoice.amount) <= 0 ||
+        Number(invoice.amount) >
+          Number(payment.amount)
+      ) {
+        throw new Error(
+          "The invoice must be valid and cannot exceed its successful payment."
+        );
+      }
+
+      /* ===================================
+         ACCEPTED ACCOMMODATION
+      =================================== */
+
+      const acceptanceResult =
+        await client.query(
+          `
+          SELECT
+            ba.id,
+            ba.booking_id,
+            ba.guest_id,
+            ba.room_id,
+            ba.bed_id,
+            ba.acceptance_status,
+
+            g.guest_name,
+
+            r.room_number,
+            r.room_status,
+            r.is_active,
+
+            rc.category_name
+
+          FROM booking_acceptances ba
+
+          INNER JOIN guests g
+            ON g.id = ba.guest_id
+
+          INNER JOIN rooms r
+            ON r.id = ba.room_id
+
+          INNER JOIN room_categories rc
+            ON rc.id = r.category_id
+
+          WHERE
+            ba.booking_id = $1
+            AND ba.acceptance_status = 'ACCEPTED'
+
+          ORDER BY
+            r.room_number,
+            g.guest_name
+          `,
+          [booking_id]
+        );
+
+      if (
+        acceptanceResult.rowCount === 0
+      ) {
+        throw new Error(
+          "No accepted room/bed selection was found."
+        );
+      }
+
+      /* ===================================
+         ALL ACCEPTANCE RECORDS MUST BE
+         ACCEPTED
+      =================================== */
+
+      const pendingAcceptanceResult =
+        await client.query(
+          `
+          SELECT
+            COUNT(*) AS count
+          FROM booking_acceptances
+          WHERE
+            booking_id = $1
+            AND acceptance_status <> 'ACCEPTED'
+          `,
+          [booking_id]
+        );
+
+      const pendingAcceptanceCount =
+        Number(
+          pendingAcceptanceResult
+            .rows[0]
+            .count
+        );
+
+      if (
+        pendingAcceptanceCount > 0
+      ) {
+        throw new Error(
+          "All accommodation acceptance records must be accepted before room locking."
+        );
+      }
+
+      /* ===================================
+         DUPLICATE LOCK
+      =================================== */
+
+      const existingAllotmentResult =
+        await client.query(
+          `
+          SELECT
+            id
+          FROM allotments
+          WHERE
+            booking_id = $1
+            AND allotment_status = 'ALLOTTED'
+          LIMIT 1
+          `,
+          [booking_id]
+        );
+
+      if (
+        existingAllotmentResult.rowCount &&
+        existingAllotmentResult.rowCount > 0
+      ) {
+        throw new Error(
+          "Accommodation is already locked for this booking."
+        );
+      }
+
+      const createdAllotments: unknown[] = [];
+
+      const processedRooms =
+        new Set<string>();
+
+      const processedBeds =
+        new Set<string>();
+
+      /* ===================================
+         PROCESS ACCEPTED SELECTIONS
+      =================================== */
+
+      for (
+        const acceptance
+        of acceptanceResult.rows
+      ) {
+
+        const roomId =
+          acceptance.room_id;
+
+        const bedId =
+          acceptance.bed_id;
+
+        const guestId =
+          acceptance.guest_id;
+
+        /* =================================
+           ROOM
+        ================================= */
+
+        const roomResult =
+          await client.query(
+            `
+            SELECT
+              r.id,
+              r.room_number,
+              r.room_status,
+              r.is_active,
+              r.total_beds,
+              rc.category_name
+
+            FROM rooms r
+
+            INNER JOIN room_categories rc
+              ON rc.id = r.category_id
+
+            WHERE r.id = $1
+
+            FOR UPDATE
+            `,
+            [roomId]
+          );
+
+        if (
+          roomResult.rowCount === 0
+        ) {
+          throw new Error(
+            "Selected room was not found."
+          );
+        }
+
+        const room =
+          roomResult.rows[0];
+
+        if (!room.is_active) {
+          throw new Error(
+            `Room ${room.room_number} is inactive.`
+          );
+        }
+
+        const wholeRoom =
+          isWholeRoomCategory(
+            room.category_name
+          );
+
+        /* =================================
+           WHOLE ROOM
+           AC / NAC / VIP
+        ================================= */
+
+        if (wholeRoom) {
+
+          if (bedId) {
+            throw new Error(
+              `Room ${room.room_number} is a whole-room accommodation. Bed selection is not allowed.`
+            );
+          }
+
+          if (
+            processedRooms.has(roomId)
+          ) {
+            continue;
+          }
+
+          processedRooms.add(roomId);
+
+          /* -------------------------------
+             DATE CONFLICT
+          -------------------------------- */
+
+          const roomConflict =
+            await checkRoomDateConflict(
+              client,
+              roomId,
+              booking_id,
+              booking.check_in_date,
+              booking.expected_check_out_date
+            );
+
+          if (
+            roomConflict.conflict
+          ) {
+            throw new Error(
+              `Room ${room.room_number} is already allotted to booking ${roomConflict.bookingReference} for ${roomConflict.checkInDate} to ${roomConflict.checkOutDate}.`
+            );
+          }
+
+          /* -------------------------------
+             ACTIVE ROOM ALLOTMENT
+          -------------------------------- */
+
+          const activeRoomResult =
+            await client.query(
+              `
+              SELECT id
+              FROM allotments
+              WHERE
+                room_id = $1
+                AND bed_id IS NULL
+                AND allotment_status = 'ALLOTTED'
+              LIMIT 1
+              `,
+              [roomId]
+            );
+
+          if (
+            activeRoomResult.rowCount &&
+            activeRoomResult.rowCount > 0
+          ) {
+            throw new Error(
+              `Room ${room.room_number} is already allotted.`
+            );
+          }
+
+          /* -------------------------------
+             GET ACCEPTED GUESTS FOR ROOM
+          -------------------------------- */
+
+          const roomGuestsResult =
+            await client.query(
+              `
+              SELECT
+                guest_id
+              FROM booking_acceptances
+              WHERE
+                booking_id = $1
+                AND room_id = $2
+                AND bed_id IS NULL
+                AND acceptance_status = 'ACCEPTED'
+              ORDER BY created_at
+              `,
+              [
+                booking_id,
+                roomId,
+              ]
+            );
+
+          if (
+            roomGuestsResult.rowCount === 0
+          ) {
+            throw new Error(
+              `No accepted guest found for room ${room.room_number}.`
+            );
+          }
+
+          /* -------------------------------
+             CREATE ALLOTMENT PER GUEST
+          -------------------------------- */
+
+          for (
+            const roomGuest
+            of roomGuestsResult.rows
+          ) {
+
+            const result =
+              await client.query(
+                `
+                INSERT INTO allotments (
+                  booking_id,
+                  room_id,
+                  bed_id,
+                  guest_id,
+                  allotted_by,
+                  allotment_status,
+                  is_emergency_allotment,
+                  remarks
+                )
+
+                VALUES (
+                  $1,
+                  $2,
+                  NULL,
+                  $3,
+                  $4,
+                  'ALLOTTED',
+                  FALSE,
+                  $5
+                )
+
+                RETURNING
+                  id,
+                  booking_id,
+                  room_id,
+                  bed_id,
+                  guest_id,
+                  allotted_by,
+                  allotment_status,
+                  is_emergency_allotment,
+                  allotted_at,
+                  released_at,
+                  remarks
+                `,
+                [
+                  booking_id,
+                  roomId,
+                  roomGuest.guest_id,
+                  allotted_by,
+                  remarks,
+                ]
+              );
+
+            createdAllotments.push(
+              result.rows[0]
+            );
+          }
+
+          /* -------------------------------
+             RESERVE ROOM
+
+             BOOKED now.
+             OCCUPIED will be handled
+             by Check-In.
+          -------------------------------- */
+
+          await client.query(
+            `
+            UPDATE beds
+            SET
+              bed_status = 'BOOKED'
+            WHERE
+              room_id = $1
+              AND is_active = TRUE
+            `,
+            [roomId]
+          );
+
+          await client.query(
+            `
+            UPDATE rooms
+            SET
+              room_status = 'BOOKED',
+              updated_at =
+                CURRENT_TIMESTAMP
+            WHERE id = $1
+            `,
+            [roomId]
+          );
+
+          continue;
+        }
+
+        /* =================================
+           BED LEVEL
+           DM / HALL
+        ================================= */
+
+        if (!bedId) {
+          throw new Error(
+            `Room ${room.room_number} requires an exact bed/seat selection.`
+          );
+        }
+
+        if (
+          processedBeds.has(bedId)
+        ) {
+          continue;
+        }
+
+        processedBeds.add(bedId);
+
+        /* -------------------------------
+           BED
+        -------------------------------- */
+
+        const bedResult =
+          await client.query(
+            `
+            SELECT
+              id,
+              room_id,
+              bed_number,
+              bed_status,
+              is_active
+
+            FROM beds
+
+            WHERE
+              id = $1
+              AND room_id = $2
+
+            FOR UPDATE
+            `,
+            [
+              bedId,
+              roomId,
+            ]
+          );
+
+        if (
+          bedResult.rowCount === 0
+        ) {
+          throw new Error(
+            `Selected bed does not belong to room ${room.room_number}.`
+          );
+        }
+
+        const bed =
+          bedResult.rows[0];
+
+        if (!bed.is_active) {
+          throw new Error(
+            `Bed ${bed.bed_number} in room ${room.room_number} is inactive.`
+          );
+        }
+
+        if (
+          bed.bed_status !==
+          "AVAILABLE"
+        ) {
+          throw new Error(
+            `Bed ${bed.bed_number} in room ${room.room_number} is not available.`
+          );
+        }
+
+        /* -------------------------------
+           DATE CONFLICT
+        -------------------------------- */
+
+        const bedConflict =
+          await checkBedDateConflict(
+            client,
+            bedId,
+            booking_id,
+            booking.check_in_date,
+            booking.expected_check_out_date
+          );
+
+        if (
+          bedConflict.conflict
+        ) {
+          throw new Error(
+            `Room ${room.room_number}, Bed ${bed.bed_number} is already allotted to booking ${bedConflict.bookingReference} for ${bedConflict.checkInDate} to ${bedConflict.checkOutDate}.`
+          );
+        }
+
+        /* -------------------------------
+           ACTIVE BED ALLOTMENT
+        -------------------------------- */
+
+        const activeBedResult =
+          await client.query(
+            `
+            SELECT id
+            FROM allotments
+            WHERE
+              bed_id = $1
+              AND allotment_status = 'ALLOTTED'
+            LIMIT 1
+            `,
+            [bedId]
+          );
+
+        if (
+          activeBedResult.rowCount &&
+          activeBedResult.rowCount > 0
+        ) {
+          throw new Error(
+            `Room ${room.room_number}, Bed ${bed.bed_number} is already allotted.`
+          );
+        }
+
+        /* -------------------------------
+           CREATE ALLOTMENT
+        -------------------------------- */
+
+        const result =
+          await client.query(
+            `
+            INSERT INTO allotments (
+              booking_id,
+              room_id,
+              bed_id,
+              guest_id,
+              allotted_by,
+              allotment_status,
+              is_emergency_allotment,
+              remarks
+            )
+
+            VALUES (
+              $1,
+              $2,
+              $3,
+              $4,
+              $5,
+              'ALLOTTED',
+              FALSE,
+              $6
+            )
+
+            RETURNING
+              id,
+              booking_id,
+              room_id,
+              bed_id,
+              guest_id,
+              allotted_by,
+              allotment_status,
+              is_emergency_allotment,
+              allotted_at,
+              released_at,
+              remarks
+            `,
+            [
+              booking_id,
+              roomId,
+              bedId,
+              guestId,
+              allotted_by,
+              remarks,
+            ]
+          );
+
+        createdAllotments.push(
+          result.rows[0]
+        );
+
+        /* -------------------------------
+           RESERVE BED
+        -------------------------------- */
+
+        await client.query(
+          `
+          UPDATE beds
+          SET
+            bed_status = 'BOOKED'
+          WHERE id = $1
+          `,
+          [bedId]
+        );
+
+        /* -------------------------------
+           UPDATE ROOM STATUS
+        -------------------------------- */
+
+        const availableBedsResult =
+          await client.query(
+            `
+            SELECT
+              COUNT(*) AS count
+            FROM beds
+            WHERE
+              room_id = $1
+              AND is_active = TRUE
+              AND bed_status = 'AVAILABLE'
+            `,
+            [roomId]
+          );
+
+        const availableCount =
+          Number(
+            availableBedsResult
+              .rows[0]
+              .count
+          );
+
+        await client.query(
+          `
+          UPDATE rooms
+          SET
+            room_status =
+              CASE
+                WHEN $2 = 0
+                  THEN 'BOOKED'
+                ELSE 'AVAILABLE'
+              END,
+            updated_at =
+              CURRENT_TIMESTAMP
+          WHERE id = $1
+          `,
+          [
+            roomId,
+            availableCount,
+          ]
+        );
+      }
+
+      /* ===================================
+         FINAL VALIDATION
+      =================================== */
+
+      if (
+        createdAllotments.length === 0
+      ) {
+        throw new Error(
+          "No room/bed allotment was created."
+        );
+      }
+
+      /* ===================================
+         BOOKING STATUS
+      =================================== */
+
+      await client.query(
+        `
+        UPDATE bookings
+        SET
+          booking_status = 'ALLOTTED',
+          updated_at =
+            CURRENT_TIMESTAMP
+        WHERE id = $1
+        `,
+        [booking_id]
+      );
+
+      /* ===================================
+         COMMIT
+      =================================== */
+
+      await client.query(
+        "COMMIT"
+      );
+
+      return res.status(201).json({
+
+        message:
+          "Room/bed locked successfully. Booking is ready for Check-In.",
+
+        booking: {
+          id:
+            booking.id,
+
+          booking_reference:
+            booking.booking_reference,
+
+          booking_status:
+            "ALLOTTED",
+
+          approval_status:
+            booking.approval_status,
+
+          acceptance_status:
+            booking.acceptance_status,
+        },
+
+        payment: {
+          id:
+            payment.id,
+
+          amount:
+            payment.amount,
+
+          payment_status:
+            payment.payment_status,
+        },
+
+        invoice: {
+          id:
+            invoice.id,
+
+          invoice_number:
+            invoice.invoice_number,
+
+          invoice_type:
+            invoice.invoice_type,
+
+          amount:
+            invoice.amount,
+        },
+
+        allotments:
+          createdAllotments,
+
+        next_stage:
+          "CHECK_IN",
+      });
+
+    } catch (error) {
+
+      await client.query(
+        "ROLLBACK"
+      );
+
+      console.error(
+        "Room lock error:",
+        error
+      );
+
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Unable to lock room/bed.";
+
+      return res.status(400).json({
+        message,
+      });
+
+    } finally {
+
+      client.release();
+
+    }
+
+  }
+);
 export default router;

@@ -3,6 +3,10 @@ import {
   useState,
 } from "react";
 
+import AppModal from "../components/AppModal";
+import { apiFetch } from "../api";
+import type { AppModalType } from "../components/AppModal";
+import { useLanguage } from "../i18n/LanguageContext";
 
 /* =========================================
    PROPS
@@ -13,7 +17,6 @@ interface CheckInProps {
   userName: string;
   onBack: () => void;
 }
-
 
 /* =========================================
    GUEST DATA
@@ -28,16 +31,16 @@ interface AllottedGuest {
   mobile_number: string | null;
   room_id: string;
   room_number: string;
-  bed_id: string;
-  bed_number: number;
+  bed_id: string | null;
+  bed_number: number | null;
   check_in_date: string;
   expected_check_out_date: string;
+  approval_status: string;
   allotment_status: string;
   check_in_status:
     | "NOT_CHECKED_IN"
     | "CHECKED_IN";
 }
-
 
 /* =========================================
    CHECK-IN PAGE
@@ -48,355 +51,438 @@ function CheckIn({
   userName,
   onBack,
 }: CheckInProps) {
+  const { language, setLanguage } =
+    useLanguage();
 
-  const [
-    guests,
-    setGuests,
-  ] = useState<AllottedGuest[]>([]);
+  const isMarathi =
+    language === "mr";
 
+  const tr = (
+    english: string,
+    marathi: string
+  ) =>
+    isMarathi
+      ? marathi
+      : english;
 
-  const [
-    loading,
-    setLoading,
-  ] = useState(true);
+  const [guests, setGuests] =
+    useState<AllottedGuest[]>([]);
 
+  const [loading, setLoading] =
+    useState(true);
 
-  const [
-    processingId,
-    setProcessingId,
-  ] = useState<string | null>(null);
+  const [processingId, setProcessingId] =
+    useState<string | null>(null);
 
+  const [search, setSearch] =
+    useState("");
 
-  const [
-    search,
-    setSearch,
-  ] = useState("");
+  const [error, setError] =
+    useState("");
 
+  const [selectedGuest, setSelectedGuest] =
+    useState<AllottedGuest | null>(
+      null
+    );
 
-  const [
-    error,
-    setError,
-  ] = useState("");
-
-
-  /* =========================================
-     MODAL
-  ========================================= */
-
-  const [
-    selectedGuest,
-    setSelectedGuest,
-  ] = useState<AllottedGuest | null>(
-    null
-  );
-
-
-  /* =========================================
-     SUCCESS MESSAGE
-  ========================================= */
-
-  const [
-    successMessage,
-    setSuccessMessage,
-  ] = useState("");
-
+  const [resultModal, setResultModal] =
+    useState<{
+      type: AppModalType;
+      title: string;
+      message: string;
+    } | null>(null);
 
   /* =========================================
      LOAD ELIGIBLE GUESTS
   ========================================= */
 
   const loadGuests = async () => {
-
     setLoading(true);
-
     setError("");
 
-
     try {
-
-      const response =
-        await fetch(
-          "http://localhost:5000/api/check-ins/eligible"
-        );
-
+      const response = await apiFetch(
+        "http://localhost:5000/api/check-ins/eligible",
+        {
+          method: "GET",
+          cache: "no-store",
+          headers: {
+            Accept: "application/json",
+            "Cache-Control": "no-cache",
+          },
+        }
+      );
 
       const data =
         await response.json();
 
+      console.log(
+        "CHECK-IN API RESPONSE:",
+        data
+      );
 
       if (!response.ok) {
+        setGuests([]);
 
         setError(
-          data.message ||
-          "Unable to load guests for check-in."
+          data?.message ||
+            tr(
+              "Unable to load guests for check-in.",
+              "चेक-इनसाठी अतिथी लोड करता आले नाहीत."
+            )
         );
 
         return;
-
       }
 
+      /* =====================================
+         NORMALIZE API RESPONSE
+      ===================================== */
 
-      setGuests(
-        Array.isArray(data.guests)
+      const apiGuests =
+        Array.isArray(data?.guests)
           ? data.guests
-          : []
+          : [];
+
+      const normalizedGuests: AllottedGuest[] =
+        apiGuests.map(
+          (guest: any) => ({
+            allotment_id:
+              String(
+                guest.allotment_id ?? ""
+              ),
+
+            booking_id:
+              String(
+                guest.booking_id ?? ""
+              ),
+
+            booking_reference:
+              String(
+                guest.booking_reference ?? ""
+              ),
+
+            guest_id:
+              String(
+                guest.guest_id ?? ""
+              ),
+
+            guest_name:
+              String(
+                guest.guest_name ?? ""
+              ),
+
+            mobile_number:
+              guest.mobile_number
+                ? String(
+                    guest.mobile_number
+                  )
+                : null,
+
+            room_id:
+              String(
+                guest.room_id ?? ""
+              ),
+
+            room_number:
+              String(
+                guest.room_number ?? ""
+              ),
+
+            bed_id:
+              guest.bed_id
+                ? String(
+                    guest.bed_id
+                  )
+                : null,
+
+            bed_number:
+              guest.bed_number ===
+                null ||
+              guest.bed_number ===
+                undefined ||
+              guest.bed_number ===
+                ""
+                ? null
+                : Number(
+                    guest.bed_number
+                  ),
+
+            check_in_date:
+              String(
+                guest.check_in_date ?? ""
+              ),
+
+            expected_check_out_date:
+              String(
+                guest.expected_check_out_date ??
+                  ""
+              ),
+
+            approval_status:
+              String(
+                guest.approval_status ??
+                  ""
+              ).toUpperCase(),
+
+            allotment_status:
+              String(
+                guest.allotment_status ??
+                  ""
+              ).toUpperCase(),
+
+            check_in_status:
+              String(
+                guest.check_in_status ??
+                  "NOT_CHECKED_IN"
+              ).toUpperCase() ===
+              "CHECKED_IN"
+                ? "CHECKED_IN"
+                : "NOT_CHECKED_IN",
+          })
+        );
+
+      console.log(
+        "NORMALIZED CHECK-IN GUESTS:",
+        normalizedGuests
       );
 
+      setGuests(
+        normalizedGuests
+      );
     } catch (error) {
-
       console.error(
         "Check-in eligible guests error:",
         error
       );
 
+      setGuests([]);
 
       setError(
-        "Unable to connect to the check-in server. Please make sure the backend is running."
+        tr(
+          "Unable to connect to the check-in server. Please make sure the backend is running.",
+          "चेक-इन सर्व्हरशी कनेक्ट करता आले नाही. कृपया बॅकएंड सुरू आहे याची खात्री करा."
+        )
       );
-
     } finally {
-
       setLoading(false);
-
     }
-
   };
-
 
   /* =========================================
      INITIAL LOAD
   ========================================= */
 
   useEffect(() => {
-
     loadGuests();
-
   }, []);
 
-
   /* =========================================
-     OPEN CHECK-IN CONFIRMATION
+     OPEN CONFIRMATION
   ========================================= */
 
   const openCheckInConfirmation = (
     guest: AllottedGuest
   ) => {
-
-    setSuccessMessage("");
-
-    setSelectedGuest(
-      guest
-    );
-
+    setError("");
+    setSelectedGuest(guest);
   };
 
-
   /* =========================================
-     CLOSE CHECK-IN CONFIRMATION
+     CLOSE CONFIRMATION
   ========================================= */
 
   const closeCheckInConfirmation = () => {
-
     if (processingId) {
-
       return;
-
     }
 
-
-    setSelectedGuest(
-      null
-    );
-
+    setSelectedGuest(null);
   };
-
 
   /* =========================================
      PERFORM CHECK-IN
   ========================================= */
 
   const confirmCheckIn = async () => {
-
     if (!selectedGuest) {
-
       return;
-
     }
-
 
     const guest =
       selectedGuest;
-
 
     setProcessingId(
       guest.allotment_id
     );
 
-
     setError("");
 
-    setSuccessMessage("");
-
-
     try {
+      const response = await apiFetch(
+        "http://localhost:5000/api/check-ins",
+        {
+          method: "POST",
 
-      const response =
-        await fetch(
-          "http://localhost:5000/api/check-ins",
-          {
-            method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+            Accept:
+              "application/json",
+          },
 
-            headers: {
-              "Content-Type":
-                "application/json",
-            },
+          body: JSON.stringify({
+            allotment_id:
+              guest.allotment_id,
 
-            body:
-              JSON.stringify({
+            booking_id:
+              guest.booking_id,
 
-                allotment_id:
-                  guest.allotment_id,
+            guest_id:
+              guest.guest_id,
 
-                booking_id:
-                  guest.booking_id,
+            room_id:
+              guest.room_id,
 
-                guest_id:
-                  guest.guest_id,
+            bed_id:
+              guest.bed_id,
 
-                room_id:
-                  guest.room_id,
-
-                bed_id:
-                  guest.bed_id,
-
-                checked_in_by:
-                  userId,
-
-              }),
-
-          }
-        );
-
+            checked_in_by:
+              userId,
+          }),
+        }
+      );
 
       const data =
         await response.json();
 
-
       if (!response.ok) {
+        setSelectedGuest(null);
 
-        setSelectedGuest(
-          null
-        );
+        setResultModal({
+          type: "error",
 
-        alert(
-          data.message ||
-          "Unable to complete check-in."
-        );
+          title: tr(
+            "Check-In Failed",
+            "चेक-इन अयशस्वी"
+          ),
+
+          message:
+            data?.message ||
+            tr(
+              "Unable to complete check-in.",
+              "चेक-इन पूर्ण करता आले नाही."
+            ),
+        });
 
         return;
-
       }
 
+      setSelectedGuest(null);
 
-      setSelectedGuest(
-        null
-      );
+      setResultModal({
+        type: "success",
 
+        title: tr(
+          "Check-In Completed",
+          "चेक-इन पूर्ण झाले"
+        ),
 
-      setSuccessMessage(
-        `Check-in completed successfully for ${guest.guest_name}.`
-      );
+        message:
+          guest.bed_number !== null
+            ? tr(
+                `Check-in completed successfully for ${guest.guest_name}.
 
+Room: ${guest.room_number}
+Bed: ${guest.bed_number}`,
+                `${guest.guest_name} यांचा चेक-इन यशस्वी झाला.
+
+खोली: ${guest.room_number}
+बेड: ${guest.bed_number}`
+              )
+            : tr(
+                `Check-in completed successfully for ${guest.guest_name}.
+
+Room: ${guest.room_number}
+Accommodation: Full Room`,
+                `${guest.guest_name} यांचा चेक-इन यशस्वी झाला.
+
+खोली: ${guest.room_number}
+निवास: पूर्ण खोली`
+              ),
+      });
 
       await loadGuests();
-
     } catch (error) {
-
       console.error(
         "Check-in error:",
         error
       );
 
+      setSelectedGuest(null);
 
-      setSelectedGuest(
-        null
-      );
+      setResultModal({
+        type: "error",
 
+        title: tr(
+          "Check-In Server Unavailable",
+          "चेक-इन सर्व्हर उपलब्ध नाही"
+        ),
 
-      alert(
-        "Unable to connect to the check-in server. Please make sure the backend is running."
-      );
-
+        message: tr(
+          "Unable to connect to the check-in server. Please make sure the backend is running.",
+          "चेक-इन सर्व्हरशी कनेक्ट करता आले नाही. कृपया बॅकएंड सुरू आहे याची खात्री करा."
+        ),
+      });
     } finally {
-
-      setProcessingId(
-        null
-      );
-
+      setProcessingId(null);
     }
-
   };
-
 
   /* =========================================
      SEARCH
   ========================================= */
 
+  const searchValue =
+    search
+      .trim()
+      .toLowerCase();
+
   const filteredGuests =
     guests.filter(
       (guest) => {
-
-        const value =
-          search
-            .trim()
-            .toLowerCase();
-
-
-        if (!value) {
-
+        if (!searchValue) {
           return true;
-
         }
 
-
         return (
-
           guest.guest_name
             .toLowerCase()
-            .includes(value)
-
-          ||
+            .includes(searchValue) ||
 
           guest.booking_reference
             .toLowerCase()
-            .includes(value)
-
-          ||
+            .includes(searchValue) ||
 
           guest.room_number
             .toLowerCase()
-            .includes(value)
-
-          ||
+            .includes(searchValue) ||
 
           String(
-            guest.bed_number
-          ).includes(value)
-
-          ||
+            guest.bed_number ?? ""
+          ).includes(
+            searchValue
+          ) ||
 
           (
             guest.mobile_number ||
             ""
           )
             .toLowerCase()
-            .includes(value)
-
+            .includes(searchValue)
         );
-
       }
     );
-
 
   /* =========================================
      COUNTS
@@ -409,7 +495,6 @@ function CheckIn({
         "NOT_CHECKED_IN"
     ).length;
 
-
   const checkedInCount =
     guests.filter(
       (guest) =>
@@ -417,13 +502,10 @@ function CheckIn({
         "CHECKED_IN"
     ).length;
 
-
   return (
-
     <div className="checkin-page">
 
       <style>{`
-
         * {
           box-sizing: border-box;
         }
@@ -508,6 +590,42 @@ function CheckIn({
           font-size: 14px;
         }
 
+        .checkin-header-right {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+        }
+
+        .language-switcher {
+          display: flex;
+          align-items: center;
+          gap: 7px;
+          border: 1px solid #dbe3ec;
+          border-radius: 9px;
+          padding: 4px 7px;
+          background: #f8fafc;
+        }
+
+        .language-button {
+          border: none;
+          background: transparent;
+          color: #64748b;
+          padding: 6px 9px;
+          border-radius: 6px;
+          font-size: 12px;
+          font-weight: 700;
+          cursor: pointer;
+        }
+
+        .language-button.active {
+          background: #163a63;
+          color: #ffffff;
+        }
+
+        .language-divider {
+          color: #cbd5e1;
+        }
+
         .checkin-back-button {
           border: 1px solid #cbd5e1;
           background: #ffffff;
@@ -517,7 +635,6 @@ function CheckIn({
           font-size: 14px;
           font-weight: 650;
           cursor: pointer;
-          transition: 0.18s ease;
         }
 
         .checkin-back-button:hover {
@@ -602,9 +719,6 @@ function CheckIn({
         .checkin-search:focus {
           border-color: #3b82f6;
           background: #ffffff;
-          box-shadow:
-            0 0 0 3px
-            rgba(59, 130, 246, 0.12);
         }
 
         .checkin-refresh {
@@ -625,17 +739,6 @@ function CheckIn({
         .checkin-refresh:disabled {
           opacity: 0.55;
           cursor: not-allowed;
-        }
-
-        .checkin-success {
-          background: #ecfdf5;
-          border: 1px solid #a7f3d0;
-          color: #047857;
-          border-radius: 10px;
-          padding: 13px 16px;
-          margin-bottom: 18px;
-          font-size: 14px;
-          font-weight: 600;
         }
 
         .checkin-error {
@@ -728,16 +831,17 @@ function CheckIn({
           font-weight: 750;
         }
 
-        .bed-number {
+        .bed-number,
+        .room-only {
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          min-width: 48px;
-          padding: 6px 9px;
+          padding: 6px 10px;
           border-radius: 7px;
           background: #eef4fa;
           color: #24527e;
           font-weight: 700;
+          font-size: 12px;
         }
 
         .status-ready {
@@ -794,23 +898,11 @@ function CheckIn({
           font-size: 12px;
           font-weight: 700;
           cursor: pointer;
-          box-shadow:
-            0 3px 8px
-            rgba(22, 58, 99, 0.18);
-          transition: 0.18s ease;
-        }
-
-        .checkin-action:hover {
-          transform: translateY(-1px);
-          box-shadow:
-            0 5px 12px
-            rgba(22, 58, 99, 0.24);
         }
 
         .checkin-action:disabled {
           opacity: 0.55;
           cursor: not-allowed;
-          transform: none;
         }
 
         .completed-text {
@@ -882,27 +974,6 @@ function CheckIn({
           box-shadow:
             0 25px 70px
             rgba(15, 23, 42, 0.28);
-          animation:
-            checkinModalIn
-            0.18s ease-out;
-        }
-
-        @keyframes checkinModalIn {
-
-          from {
-            opacity: 0;
-            transform:
-              translateY(10px)
-              scale(0.98);
-          }
-
-          to {
-            opacity: 1;
-            transform:
-              translateY(0)
-              scale(1);
-          }
-
         }
 
         .checkin-modal-header {
@@ -953,11 +1024,6 @@ function CheckIn({
           color: #ffffff;
           font-size: 20px;
           cursor: pointer;
-        }
-
-        .checkin-modal-close:hover {
-          background:
-            rgba(255,255,255,0.22);
         }
 
         .checkin-modal-body {
@@ -1031,10 +1097,6 @@ function CheckIn({
           cursor: pointer;
         }
 
-        .modal-cancel-button:hover {
-          background: #f1f5f9;
-        }
-
         .modal-confirm-button {
           border: none;
           background:
@@ -1049,23 +1111,15 @@ function CheckIn({
           font-size: 13px;
           font-weight: 700;
           cursor: pointer;
-          box-shadow:
-            0 4px 10px
-            rgba(22, 58, 99, 0.2);
         }
 
-        .modal-confirm-button:hover {
-          transform: translateY(-1px);
-        }
-
-        .modal-confirm-button:disabled {
+        .modal-confirm-button:disabled,
+        .modal-cancel-button:disabled {
           opacity: 0.55;
           cursor: not-allowed;
-          transform: none;
         }
 
         @media (max-width: 900px) {
-
           .checkin-page {
             padding: 16px;
           }
@@ -1083,17 +1137,24 @@ function CheckIn({
             min-width: 0;
           }
 
-          .checkin-search {
-            width: 100%;
+          .checkin-header {
+            align-items: flex-start;
           }
 
+          .checkin-header-right {
+            flex-direction: column;
+            align-items: stretch;
+          }
         }
 
         @media (max-width: 600px) {
-
           .checkin-header {
             flex-direction: column;
             align-items: stretch;
+          }
+
+          .checkin-header-right {
+            width: 100%;
           }
 
           .checkin-back-button {
@@ -1116,14 +1177,10 @@ function CheckIn({
           .modal-confirm-button {
             width: 100%;
           }
-
         }
-
       `}</style>
 
-
       <div className="checkin-container">
-
 
         {/* =====================================
             HEADER
@@ -1138,30 +1195,76 @@ function CheckIn({
             </div>
 
             <div>
-
               <h1>
-                Guest Check-In
+                {tr(
+                  "Guest Check-In",
+                  "अतिथी चेक-इन"
+                )}
               </h1>
 
               <p>
-                ESM Rest House • Pune
+                {tr(
+                  "ESM Rest House • Pune",
+                  "ESM विश्रामगृह • पुणे"
+                )}
               </p>
-
             </div>
 
           </div>
 
+          <div className="checkin-header-right">
 
-          <button
-            type="button"
-            className="checkin-back-button"
-            onClick={onBack}
-          >
-            ← Back to Dashboard
-          </button>
+            <div className="language-switcher">
+
+              <button
+                type="button"
+                className={`language-button ${
+                  language === "en"
+                    ? "active"
+                    : ""
+                }`}
+                onClick={() =>
+                  setLanguage("en")
+                }
+              >
+                EN
+              </button>
+
+              <span className="language-divider">
+                |
+              </span>
+
+              <button
+                type="button"
+                className={`language-button ${
+                  language === "mr"
+                    ? "active"
+                    : ""
+                }`}
+                onClick={() =>
+                  setLanguage("mr")
+                }
+              >
+                मराठी
+              </button>
+
+            </div>
+
+            <button
+              type="button"
+              className="checkin-back-button"
+              onClick={onBack}
+            >
+              ←{" "}
+              {tr(
+                "Back to Dashboard",
+                "डॅशबोर्डवर परत जा"
+              )}
+            </button>
+
+          </div>
 
         </header>
-
 
         {/* =====================================
             SUMMARY
@@ -1172,7 +1275,10 @@ function CheckIn({
           <div className="summary-card">
 
             <div className="summary-label">
-              Total Allotted Guests
+              {tr(
+                "Total Allotted Guests",
+                "एकूण अलॉट केलेले अतिथी"
+              )}
             </div>
 
             <div className="summary-number">
@@ -1181,11 +1287,13 @@ function CheckIn({
 
           </div>
 
-
           <div className="summary-card">
 
             <div className="summary-label">
-              Ready for Check-In
+              {tr(
+                "Ready for Check-In",
+                "चेक-इनसाठी तयार"
+              )}
             </div>
 
             <div className="summary-number">
@@ -1194,11 +1302,13 @@ function CheckIn({
 
           </div>
 
-
           <div className="summary-card">
 
             <div className="summary-label">
-              Checked In
+              {tr(
+                "Checked In",
+                "चेक-इन झालेले"
+              )}
             </div>
 
             <div className="summary-number">
@@ -1209,7 +1319,6 @@ function CheckIn({
 
         </section>
 
-
         {/* =====================================
             TOOLBAR
         ===================================== */}
@@ -1219,20 +1328,29 @@ function CheckIn({
           <div className="checkin-user">
 
             <strong>
-              Reception Desk
+              {tr(
+                "Reception Desk",
+                "रिसेप्शन डेस्क"
+              )}
             </strong>
 
             <span>
-              Logged in as {userName}
+              {tr(
+                "Logged in as",
+                "लॉग-इन वापरकर्ता"
+              )}{" "}
+              {userName}
             </span>
 
           </div>
 
-
           <input
             type="text"
             className="checkin-search"
-            placeholder="Search guest, booking, room, bed or mobile..."
+            placeholder={tr(
+              "Search guest, booking, room, bed or mobile...",
+              "अतिथी, बुकिंग, खोली, बेड किंवा मोबाईल शोधा..."
+            )}
             value={search}
             onChange={(event) =>
               setSearch(
@@ -1241,7 +1359,6 @@ function CheckIn({
             }
           />
 
-
           <button
             type="button"
             className="checkin-refresh"
@@ -1249,38 +1366,27 @@ function CheckIn({
             disabled={loading}
           >
             {loading
-              ? "Refreshing..."
-              : "↻ Refresh"}
+              ? tr(
+                  "Refreshing...",
+                  "रिफ्रेश होत आहे..."
+                )
+              : `↻ ${tr(
+                  "Refresh",
+                  "रिफ्रेश"
+                )}`}
           </button>
 
         </section>
-
-
-        {/* =====================================
-            SUCCESS
-        ===================================== */}
-
-        {successMessage && (
-
-          <div className="checkin-success">
-            ✓ {successMessage}
-          </div>
-
-        )}
-
 
         {/* =====================================
             ERROR
         ===================================== */}
 
         {error && (
-
           <div className="checkin-error">
             {error}
           </div>
-
         )}
-
 
         {/* =====================================
             CONTENT
@@ -1295,12 +1401,17 @@ function CheckIn({
             </div>
 
             <h2>
-              Loading Check-In List
+              {tr(
+                "Loading Check-In List",
+                "चेक-इन यादी लोड होत आहे"
+              )}
             </h2>
 
             <p>
-              Please wait while the system
-              loads allotted guests.
+              {tr(
+                "Please wait while the system loads allotted guests.",
+                "सिस्टम अलॉट केलेले अतिथी लोड करत आहे. कृपया प्रतीक्षा करा."
+              )}
             </p>
 
           </div>
@@ -1314,12 +1425,22 @@ function CheckIn({
             </div>
 
             <h2>
-              No Guests Found
+              {tr(
+                "No Guests Found",
+                "अतिथी सापडले नाहीत"
+              )}
             </h2>
 
             <p>
-              There are currently no allotted
-              guests matching your search.
+              {guests.length === 0
+                ? tr(
+                    "No approved and allotted guests are currently available for check-in.",
+                    "सध्या चेक-इनसाठी कोणतेही मंजूर आणि अलॉट केलेले अतिथी उपलब्ध नाहीत."
+                  )
+                : tr(
+                    "No guests match your current search.",
+                    "आपल्या सध्याच्या शोधाशी कोणतेही अतिथी जुळत नाहीत."
+                  )}
             </p>
 
           </div>
@@ -1328,74 +1449,101 @@ function CheckIn({
 
           <section className="checkin-table-card">
 
-
             <div className="checkin-table-header">
 
               <h2>
-                Allotted Guests
+                {tr(
+                  "Allotted Guests",
+                  "अलॉट केलेले अतिथी"
+                )}
               </h2>
 
               <span>
-                Showing {
-                  filteredGuests.length
-                } guest{
-                  filteredGuests.length !== 1
-                    ? "s"
-                    : ""
-                }
+                {tr(
+                  "Showing",
+                  "दाखवत आहे"
+                )}{" "}
+                {filteredGuests.length}{" "}
+                {tr(
+                  "guest(s)",
+                  "अतिथी"
+                )}
               </span>
 
             </div>
-
 
             <div className="checkin-table-wrapper">
 
               <table className="checkin-table">
 
                 <thead>
-
                   <tr>
 
                     <th>
-                      Booking
+                      {tr(
+                        "Booking",
+                        "बुकिंग"
+                      )}
                     </th>
 
                     <th>
-                      Guest
+                      {tr(
+                        "Guest",
+                        "अतिथी"
+                      )}
                     </th>
 
                     <th>
-                      Mobile
+                      {tr(
+                        "Mobile",
+                        "मोबाईल"
+                      )}
                     </th>
 
                     <th>
-                      Room
+                      {tr(
+                        "Room",
+                        "खोली"
+                      )}
                     </th>
 
                     <th>
-                      Bed
+                      {tr(
+                        "Bed / Accommodation",
+                        "बेड / निवास"
+                      )}
                     </th>
 
                     <th>
-                      Check-In Date
+                      {tr(
+                        "Check-In Date",
+                        "चेक-इन तारीख"
+                      )}
                     </th>
 
                     <th>
-                      Expected Check-Out
+                      {tr(
+                        "Expected Check-Out",
+                        "अपेक्षित चेक-आउट"
+                      )}
                     </th>
 
                     <th>
-                      Status
+                      {tr(
+                        "Status",
+                        "स्थिती"
+                      )}
                     </th>
 
                     <th>
-                      Action
+                      {tr(
+                        "Action",
+                        "कृती"
+                      )}
                     </th>
 
                   </tr>
-
                 </thead>
-
 
                 <tbody>
 
@@ -1416,7 +1564,6 @@ function CheckIn({
                           </span>
                         </td>
 
-
                         <td>
                           <span className="guest-name">
                             {
@@ -1425,14 +1572,12 @@ function CheckIn({
                           </span>
                         </td>
 
-
                         <td>
                           {
                             guest.mobile_number ||
                             "—"
                           }
                         </td>
-
 
                         <td>
                           <span className="room-number">
@@ -1442,33 +1587,46 @@ function CheckIn({
                           </span>
                         </td>
 
-
                         <td>
-                          <span className="bed-number">
-                            Bed {
-                              guest.bed_number
-                            }
-                          </span>
+
+                          {guest.bed_number !== null ? (
+
+                            <span className="bed-number">
+                              {tr(
+                                "Bed",
+                                "बेड"
+                              )}{" "}
+                              {
+                                guest.bed_number
+                              }
+                            </span>
+
+                          ) : (
+
+                            <span className="room-only">
+                              {tr(
+                                "Room Only",
+                                "पूर्ण खोली"
+                              )}
+                            </span>
+
+                          )}
+
                         </td>
 
-
                         <td>
-                          {
-                            formatDate(
-                              guest.check_in_date
-                            )
-                          }
+                          {formatDate(
+                            guest.check_in_date,
+                            isMarathi
+                          )}
                         </td>
 
-
                         <td>
-                          {
-                            formatDate(
-                              guest.expected_check_out_date
-                            )
-                          }
+                          {formatDate(
+                            guest.expected_check_out_date,
+                            isMarathi
+                          )}
                         </td>
-
 
                         <td>
 
@@ -1476,19 +1634,24 @@ function CheckIn({
                           "CHECKED_IN" ? (
 
                             <span className="status-checked">
-                              CHECKED IN
+                              {tr(
+                                "CHECKED IN",
+                                "चेक-इन झाले"
+                              )}
                             </span>
 
                           ) : (
 
                             <span className="status-ready">
-                              READY
+                              {tr(
+                                "READY",
+                                "तयार"
+                              )}
                             </span>
 
                           )}
 
                         </td>
-
 
                         <td>
 
@@ -1496,7 +1659,11 @@ function CheckIn({
                           "CHECKED_IN" ? (
 
                             <span className="completed-text">
-                              ✓ Completed
+                              ✓{" "}
+                              {tr(
+                                "Completed",
+                                "पूर्ण"
+                              )}
                             </span>
 
                           ) : (
@@ -1514,9 +1681,10 @@ function CheckIn({
                                 )
                               }
                             >
-
-                              Check-In
-
+                              {tr(
+                                "Check-In",
+                                "चेक-इन"
+                              )}
                             </button>
 
                           )}
@@ -1540,10 +1708,9 @@ function CheckIn({
 
       </div>
 
-
-      {/* =======================================
+      {/* =====================================
           CHECK-IN CONFIRMATION MODAL
-      ======================================= */}
+      ===================================== */}
 
       {selectedGuest && (
 
@@ -1555,9 +1722,7 @@ function CheckIn({
               event.target ===
               event.currentTarget
             ) {
-
               closeCheckInConfirmation();
-
             }
 
           }}
@@ -1567,11 +1732,7 @@ function CheckIn({
             className="checkin-modal"
             role="dialog"
             aria-modal="true"
-            aria-labelledby="checkin-modal-title"
           >
-
-
-            {/* MODAL HEADER */}
 
             <header className="checkin-modal-header">
 
@@ -1581,12 +1742,14 @@ function CheckIn({
                   ✓
                 </div>
 
-                <h2 id="checkin-modal-title">
-                  Confirm Guest Check-In
+                <h2>
+                  {tr(
+                    "Confirm Guest Check-In",
+                    "अतिथी चेक-इनची पुष्टी करा"
+                  )}
                 </h2>
 
               </div>
-
 
               <button
                 type="button"
@@ -1597,34 +1760,29 @@ function CheckIn({
                 disabled={
                   Boolean(processingId)
                 }
-                aria-label="Close"
               >
                 ×
               </button>
 
             </header>
 
-
-            {/* MODAL BODY */}
-
             <div className="checkin-modal-body">
 
               <p className="checkin-modal-intro">
-
-                Please verify the following
-                accommodation details before
-                completing the guest check-in.
-
+                {tr(
+                  "Please verify the following accommodation details before completing the guest check-in.",
+                  "अतिथीचे चेक-इन पूर्ण करण्यापूर्वी खालील निवास तपशील तपासा."
+                )}
               </p>
-
 
               <div className="checkin-details">
 
-
                 <div className="checkin-detail">
-
                   <span className="checkin-detail-label">
-                    Guest
+                    {tr(
+                      "Guest",
+                      "अतिथी"
+                    )}
                   </span>
 
                   <span className="checkin-detail-value">
@@ -1632,14 +1790,14 @@ function CheckIn({
                       selectedGuest.guest_name
                     }
                   </span>
-
                 </div>
 
-
                 <div className="checkin-detail">
-
                   <span className="checkin-detail-label">
-                    Booking
+                    {tr(
+                      "Booking",
+                      "बुकिंग"
+                    )}
                   </span>
 
                   <span className="checkin-detail-value">
@@ -1647,14 +1805,14 @@ function CheckIn({
                       selectedGuest.booking_reference
                     }
                   </span>
-
                 </div>
 
-
                 <div className="checkin-detail">
-
                   <span className="checkin-detail-label">
-                    Mobile
+                    {tr(
+                      "Mobile",
+                      "मोबाईल"
+                    )}
                   </span>
 
                   <span className="checkin-detail-value">
@@ -1663,14 +1821,14 @@ function CheckIn({
                       "—"
                     }
                   </span>
-
                 </div>
 
-
                 <div className="checkin-detail">
-
                   <span className="checkin-detail-label">
-                    Room
+                    {tr(
+                      "Room",
+                      "खोली"
+                    )}
                   </span>
 
                   <span className="checkin-detail-value">
@@ -1678,88 +1836,92 @@ function CheckIn({
                       selectedGuest.room_number
                     }
                   </span>
-
                 </div>
 
-
                 <div className="checkin-detail">
-
                   <span className="checkin-detail-label">
-                    Bed
+                    {tr(
+                      "Bed / Accommodation",
+                      "बेड / निवास"
+                    )}
                   </span>
 
                   <span className="checkin-detail-value">
-                    Bed {
-                      selectedGuest.bed_number
-                    }
-                  </span>
 
+                    {selectedGuest.bed_number !==
+                    null
+                      ? `${tr(
+                          "Bed",
+                          "बेड"
+                        )} ${
+                          selectedGuest.bed_number
+                        }`
+                      : tr(
+                          "Full Room",
+                          "पूर्ण खोली"
+                        )}
+
+                  </span>
                 </div>
 
-
                 <div className="checkin-detail">
-
                   <span className="checkin-detail-label">
-                    Check-In Date
+                    {tr(
+                      "Check-In Date",
+                      "चेक-इन तारीख"
+                    )}
                   </span>
 
                   <span className="checkin-detail-value">
-                    {
-                      formatDate(
-                        selectedGuest.check_in_date
-                      )
-                    }
+                    {formatDate(
+                      selectedGuest.check_in_date,
+                      isMarathi
+                    )}
                   </span>
-
                 </div>
 
-
                 <div className="checkin-detail">
-
                   <span className="checkin-detail-label">
-                    Expected Check-Out
+                    {tr(
+                      "Expected Check-Out",
+                      "अपेक्षित चेक-आउट"
+                    )}
                   </span>
 
                   <span className="checkin-detail-value">
-                    {
-                      formatDate(
-                        selectedGuest.expected_check_out_date
-                      )
-                    }
+                    {formatDate(
+                      selectedGuest.expected_check_out_date,
+                      isMarathi
+                    )}
                   </span>
-
                 </div>
 
-
                 <div className="checkin-detail">
-
                   <span className="checkin-detail-label">
-                    Current Status
+                    {tr(
+                      "Current Status",
+                      "सध्याची स्थिती"
+                    )}
                   </span>
 
                   <span className="checkin-detail-value">
-                    READY
+                    {tr(
+                      "READY",
+                      "तयार"
+                    )}
                   </span>
-
                 </div>
 
               </div>
 
-
               <div className="checkin-confirm-note">
-
-                Confirming this action will record
-                the current date and time as the
-                guest's check-in time and record
-                the logged-in user as the person
-                who completed the check-in.
-
+                {tr(
+                  "Confirming this action will record the current date and time as the guest's check-in time and record the logged-in user as the person who completed the check-in.",
+                  "या कृतीची पुष्टी केल्यावर सध्याची तारीख व वेळ अतिथीची चेक-इन वेळ म्हणून नोंदवली जाईल आणि लॉग-इन केलेला वापरकर्ता चेक-इन पूर्ण करणारी व्यक्ती म्हणून नोंदवला जाईल."
+                )}
               </div>
 
             </div>
-
-
-            {/* MODAL FOOTER */}
 
             <footer className="checkin-modal-footer">
 
@@ -1773,9 +1935,11 @@ function CheckIn({
                   Boolean(processingId)
                 }
               >
-                Cancel
+                {tr(
+                  "Cancel",
+                  "रद्द करा"
+                )}
               </button>
-
 
               <button
                 type="button"
@@ -1788,12 +1952,16 @@ function CheckIn({
                   selectedGuest.allotment_id
                 }
               >
-
                 {processingId ===
                 selectedGuest.allotment_id
-                  ? "Checking In..."
-                  : "Confirm Check-In"}
-
+                  ? tr(
+                      "Checking In...",
+                      "चेक-इन होत आहे..."
+                    )
+                  : tr(
+                      "Confirm Check-In",
+                      "चेक-इनची पुष्टी करा"
+                    )}
               </button>
 
             </footer>
@@ -1804,52 +1972,64 @@ function CheckIn({
 
       )}
 
-    </div>
+      {/* =====================================
+          RESULT MODAL
+      ===================================== */}
 
+      {resultModal && (
+
+        <AppModal
+          type={resultModal.type}
+          title={resultModal.title}
+          message={resultModal.message}
+          confirmText={tr(
+            "OK",
+            "ठीक आहे"
+          )}
+          showCancel={false}
+          onClose={() =>
+            setResultModal(null)
+          }
+        />
+
+      )}
+
+    </div>
   );
 }
-
 
 /* =========================================
    DATE FORMAT
 ========================================= */
 
 function formatDate(
-  value: string
+  value: string,
+  marathi = false
 ): string {
-
   if (!value) {
-
     return "—";
-
   }
 
-
-  const date =
-    new Date(value);
-
+  const date = new Date(value);
 
   if (
     Number.isNaN(
       date.getTime()
     )
   ) {
-
     return value;
-
   }
 
-
   return date.toLocaleDateString(
-    "en-IN",
+    marathi
+      ? "mr-IN"
+      : "en-IN",
     {
       day: "2-digit",
       month: "2-digit",
       year: "numeric",
     }
   );
-
 }
 
-
-export default CheckIn; 
+export default CheckIn;

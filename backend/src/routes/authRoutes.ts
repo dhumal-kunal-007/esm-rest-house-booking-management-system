@@ -1,8 +1,62 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { pool } from "../config/db.js";
+import {
+    createAuthToken,
+    requireAuth,
+} from "../auth/authMiddleware.js";
 
 const router = Router();
+
+router.get("/me", requireAuth, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `
+            SELECT
+                u.id,
+                u.full_name,
+                u.username,
+                u.is_active,
+                r.id AS role_id,
+                r.role_name,
+                r.description
+            FROM users u
+            INNER JOIN roles r
+                ON r.id = u.role_id
+            WHERE u.id = $1
+                AND u.is_active = TRUE
+            LIMIT 1
+            `,
+            [req.authUser?.id]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(401).json({
+                success: false,
+                message: "Your account is inactive or no longer exists.",
+            });
+        }
+
+        const user = result.rows[0];
+        return res.json({
+            success: true,
+            user: {
+                id: user.id,
+                full_name: user.full_name,
+                username: user.username,
+                role_id: user.role_id,
+                role_name: user.role_name,
+                description: user.description,
+            },
+        });
+    } catch (error) {
+        console.error("Restore session error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Unable to restore your session.",
+        });
+    }
+});
 
 router.post("/login", async (req, res) => {
     try {
@@ -65,6 +119,7 @@ router.post("/login", async (req, res) => {
         return res.json({
             success: true,
             message: "Login successful",
+            token: createAuthToken(user.id),
             user: {
                 id: user.id,
                 full_name: user.full_name,

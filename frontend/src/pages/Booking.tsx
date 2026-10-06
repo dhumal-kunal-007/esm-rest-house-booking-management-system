@@ -8,6 +8,8 @@ import type {
   AccommodationCategory,
 } from "../App";
 
+import { useLanguage } from "../i18n/LanguageContext";
+
 /* =================================
    CONSTANTS
 ================================== */
@@ -21,55 +23,42 @@ const relationshipOptions = [
   "FATHER",
 ] as const;
 
-const selfIdentityProofOptions = [
-  "ESM CARD",
-  "WIDOW CARD",
-  "ECHS CARD",
-  "CSD CARD",
-];
-
-const relativeIdentityProofOptions = [
-  "DEPARTMENT CARD",
-  "AADHAAR CARD",
-  "PAN CARD",
-];
-
 const relationshipProofOptions = [
   "DEPARTMENT CARD",
   "AADHAAR CARD",
   "PAN CARD",
+  "DEPENDENT CARD",
+  "WIDOW CARD",
+  "CANTEEN CARD",
+  "ECHS CARD",
 ];
+
+const STANDARD_CHECK_IN_TIME = "14:00";
+const STANDARD_CHECK_OUT_TIME = "12:00";
+const TURNOVER_BUFFER_HOURS = 2;
 
 /* =================================
    TYPES
 ================================== */
 
 export interface Guest {
-
   id?: string;
 
   name: string;
+  gender: string;
 
   relationship: string;
 
   mobile: string;
-
-  identityProofType: string;
-
-  identityProofNumber: string;
+  address: string;
 
   relationshipProofType: string;
 
   relationshipProofNumber: string;
 
-  /*
-   * Legacy fields retained temporarily
-   * for compatibility with the existing
-   * application.
-   */
   aadhaar: string;
 
-  identityProof: string;
+  document?: File | null;
 }
 
 /* =================================
@@ -77,13 +66,6 @@ export interface Guest {
 ================================== */
 
 export interface BookingDraft {
-
-  /*
-   * PostgreSQL booking UUID.
-   *
-   * This is filled after the booking
-   * is successfully created in the backend.
-   */
   id?: string;
 
   category: AccommodationCategory;
@@ -93,17 +75,13 @@ export interface BookingDraft {
     | "ADVANCE";
 
   serviceman: {
-
     number: string;
-
     rank: string;
-
     name: string;
-
+    mobile: string;
     address: string;
-
-    identityNo: string;
-
+    aadhaar: string;
+    document?: File | null;
   };
 
   guests: Guest[];
@@ -112,18 +90,6 @@ export interface BookingDraft {
 
   checkOut: string;
 
-  payment: {
-
-    mode: string;
-
-    transactionNo: string;
-
-    amount: string;
-
-    date: string;
-
-  };
-
 }
 
 /* =================================
@@ -131,9 +97,7 @@ export interface BookingDraft {
 ================================== */
 
 interface BookingProps {
-
-  category:
-    AccommodationCategory;
+  category: AccommodationCategory;
 
   officerName: string;
 
@@ -150,19 +114,8 @@ interface BookingProps {
    DATE HELPERS
 ================================== */
 
-/*
- * Returns local system date as:
- *
- * YYYY-MM-DD
- *
- * We intentionally do not use
- * toISOString() because UTC conversion
- * can shift the date.
- */
 const getTodayDate = (): string => {
-
-  const now =
-    new Date();
+  const now = new Date();
 
   const year =
     now.getFullYear();
@@ -184,17 +137,9 @@ const getTodayDate = (): string => {
     );
 
   return `${year}-${month}-${day}`;
-
 };
 
-
-/*
- * Returns tomorrow as:
- *
- * YYYY-MM-DD
- */
 const getTomorrowDate = (): string => {
-
   const tomorrow =
     new Date();
 
@@ -222,50 +167,52 @@ const getTomorrowDate = (): string => {
     );
 
   return `${year}-${month}-${day}`;
-
 };
 
-
-/*
- * Creates a datetime-local value.
- *
- * Example:
- *
- * 2026-09-18T09:00
- */
 const createDateTime = (
   date: string,
   time: string
 ): string => {
-
   return `${date}T${time}`;
-
 };
 
-
-/*
- * Extracts YYYY-MM-DD from a
- * datetime-local value.
- */
 const getDatePart = (
   value: string
 ): string => {
-
-  if (
-    !value
-  ) {
-
+  if (!value) {
     return "";
-
   }
 
   return value.slice(
     0,
     10
   );
-
 };
 
+const getNextDate = (
+  value: string
+): string => {
+  if (!value) {
+    return "";
+  }
+
+  const nextDate = new Date(
+    `${value}T12:00:00`
+  );
+  nextDate.setDate(
+    nextDate.getDate() + 1
+  );
+
+  const year = nextDate.getFullYear();
+  const month = String(
+    nextDate.getMonth() + 1
+  ).padStart(2, "0");
+  const day = String(
+    nextDate.getDate()
+  ).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+};
 
 /* =================================
    EMPTY GUEST
@@ -273,32 +220,25 @@ const getDatePart = (
 
 const createEmptyGuest =
   (): Guest => ({
-
     id: undefined,
 
     name: "",
 
+    gender: "",
+
     relationship: "",
 
     mobile: "",
-
-    identityProofType: "",
-
-    identityProofNumber: "",
+    address: "",
 
     relationshipProofType: "",
 
     relationshipProofNumber: "",
 
-    /*
-     * Legacy compatibility fields.
-     */
     aadhaar: "",
 
-    identityProof: "",
-
+    document: null,
   });
-
 
 /* =================================
    COMPONENT
@@ -312,6 +252,26 @@ function Booking({
   onContinue,
 }: BookingProps) {
 
+  const {
+    language,
+    setLanguage,
+  } = useLanguage();
+
+  const isMarathi =
+    language === "mr";
+
+  /* =================================
+     TRANSLATION HELPER
+  ================================== */
+
+  const tr = (
+    english: string,
+    marathi: string
+  ) =>
+    isMarathi
+      ? marathi
+      : english;
+
   /* =================================
      CURRENT DATE
   ================================== */
@@ -321,7 +281,6 @@ function Booking({
 
   const tomorrow =
     getTomorrowDate();
-
 
   /* =================================
      BOOKING TYPE
@@ -334,7 +293,6 @@ function Booking({
     "CURRENT" | "ADVANCE"
   >("CURRENT");
 
-
   /* =================================
      SERVICEMAN
   ================================== */
@@ -342,20 +300,15 @@ function Booking({
   const [
     serviceman,
     setServiceman,
-  ] = useState({
-
+  ] = useState<BookingDraft["serviceman"]>({
     number: "",
-
     rank: "",
-
     name: "",
-
+    mobile: "",
     address: "",
-
-    identityNo: "",
-
+    aadhaar: "",
+    document: null,
   });
-
 
   /* =================================
      GUEST COUNT
@@ -365,7 +318,7 @@ function Booking({
     guestCount,
     setGuestCount,
   ] = useState(1);
-
+  const [guestCountInput, setGuestCountInput] = useState("1");
 
   /* =================================
      GUESTS
@@ -378,25 +331,17 @@ function Booking({
     createEmptyGuest(),
   ]);
 
-
   /* =================================
      DURATION
   ================================== */
 
-  /*
-   * CURRENT starts with today's date.
-   *
-   * We intentionally leave checkout
-   * blank so the user chooses the
-   * actual checkout date/time.
-   */
   const [
     checkIn,
     setCheckIn,
   ] = useState(
     createDateTime(
       today,
-      "09:00"
+      STANDARD_CHECK_IN_TIME
     )
   );
 
@@ -404,26 +349,8 @@ function Booking({
     checkOut,
     setCheckOut,
   ] = useState("");
-
-
-  /* =================================
-     PAYMENT
-  ================================== */
-
-  const [
-    payment,
-    setPayment,
-  ] = useState({
-
-    mode: "Cash",
-
-    transactionNo: "",
-
-    amount: "",
-
-    date: "",
-
-  });
+  const [checkInError, setCheckInError] = useState("");
+  const [checkOutError, setCheckOutError] = useState("");
 
 
   /* =================================
@@ -434,11 +361,53 @@ function Booking({
     category === "AC"
       ? "AC"
       : category === "Non-AC"
-      ? "Non-AC"
+      ? tr("Non-AC", "नॉन-एसी")
       : category === "Dormitory"
-      ? "Dormitory"
-      : "VIP";
+      ? tr("Dormitory", "वसतिगृह")
+      : tr("VIP", "व्हीआयपी");
 
+  /* =================================
+     LANGUAGE SWITCH
+  ================================== */
+
+  const languageSwitcher = (
+    <div
+      className="language-switcher"
+      aria-label="Language selection"
+    >
+      <button
+        type="button"
+        className={`language-button ${
+          language === "en"
+            ? "active"
+            : ""
+        }`}
+        onClick={() =>
+          setLanguage("en")
+        }
+      >
+        English
+      </button>
+
+      <span className="language-divider">
+        |
+      </span>
+
+      <button
+        type="button"
+        className={`language-button ${
+          language === "mr"
+            ? "active"
+            : ""
+        }`}
+        onClick={() =>
+          setLanguage("mr")
+        }
+      >
+        मराठी
+      </button>
+    </div>
+  );
 
   /* =================================
      BOOKING TYPE CHANGE
@@ -449,56 +418,39 @@ function Booking({
       | "CURRENT"
       | "ADVANCE"
   ) => {
-
     setBookingType(
       newType
     );
 
-
-    /*
-     * CURRENT booking
-     *
-     * Always start today.
-     */
     if (
       newType ===
       "CURRENT"
     ) {
-
       setCheckIn(
         createDateTime(
           today,
-          "09:00"
+          STANDARD_CHECK_IN_TIME
         )
       );
 
-      setCheckOut(
-        ""
-      );
+      setCheckOut("");
+      setCheckInError("");
+      setCheckOutError("");
 
       return;
-
     }
 
-
-    /*
-     * ADVANCE booking
-     *
-     * Start with tomorrow at 09:00.
-     */
     setCheckIn(
       createDateTime(
         tomorrow,
-        "09:00"
+        STANDARD_CHECK_IN_TIME
       )
     );
 
-    setCheckOut(
-      ""
-    );
-
+    setCheckOut("");
+    setCheckInError("");
+    setCheckOutError("");
   };
-
 
   /* =================================
      SERVICEMAN UPDATE
@@ -508,44 +460,61 @@ function Booking({
     field: keyof typeof serviceman,
     value: string
   ) => {
-
     setServiceman(
       (current) => ({
-
         ...current,
-
         [field]: value,
-
       })
     );
-
+    setGuests((current) =>
+      current.map((guest) =>
+        guest.relationship === "SELF"
+          ? {
+              ...guest,
+              ...(field === "name" ? { name: value } : {}),
+              ...(field === "mobile" ? { mobile: value } : {}),
+              ...(field === "address" ? { address: value } : {}),
+              ...(field === "aadhaar" ? { aadhaar: value } : {}),
+            }
+          : guest
+      )
+    );
   };
-
 
   /* =================================
      GUEST COUNT CHANGE
   ================================== */
 
   const handleGuestCountChange = (
-    value: number
+    value: string
   ) => {
+    setGuestCountInput(value);
+
+    if (!value) {
+      return;
+    }
+
+    const parsedCount = Number(value);
+    if (!Number.isFinite(parsedCount)) {
+      return;
+    }
 
     const count =
       Math.max(
         1,
         Math.min(
           10,
-          value
+          parsedCount
         )
       );
 
+    setGuestCountInput(String(count));
     setGuestCount(
       count
     );
 
     setGuests(
       (current) => {
-
         const updated = [
           ...current,
         ];
@@ -554,23 +523,25 @@ function Booking({
           updated.length <
           count
         ) {
-
           updated.push(
             createEmptyGuest()
           );
-
         }
 
         return updated.slice(
           0,
           count
         );
-
       }
     );
-
   };
 
+  const handleAddGuest = () => {
+    if (guestCount >= 10) {
+      return;
+    }
+    handleGuestCountChange(String(guestCount + 1));
+  };
 
   /* =================================
      GUEST UPDATE
@@ -581,7 +552,6 @@ function Booking({
     field: keyof Guest,
     value: string
   ) => {
-
     setGuests(
       (current) =>
         current.map(
@@ -589,40 +559,35 @@ function Booking({
             guest,
             guestIndex
           ) => {
-
             if (
               guestIndex !==
               index
             ) {
-
               return guest;
-
             }
 
-
-            /*
-             * When relationship changes,
-             * clear proof fields because
-             * the allowed proof options
-             * have changed.
-             */
             if (
               field ===
               "relationship"
             ) {
+              if (value === "SELF") {
+                return {
+                  ...guest,
+                  relationship: value,
+                  name: serviceman.name,
+                  mobile: serviceman.mobile,
+                  address: serviceman.address,
+                  aadhaar: serviceman.aadhaar,
+                  relationshipProofType: "",
+                  relationshipProofNumber: "",
+                };
+              }
 
               return {
-
                 ...guest,
 
                 relationship:
                   value,
-
-                identityProofType:
-                  "",
-
-                identityProofNumber:
-                  "",
 
                 relationshipProofType:
                   "",
@@ -630,113 +595,18 @@ function Booking({
                 relationshipProofNumber:
                   "",
 
-                /*
-                 * Legacy compatibility.
-                 */
-                aadhaar:
-                  "",
-
-                identityProof:
-                  "",
-
               };
-
             }
 
-
             return {
-
               ...guest,
-
               [field]:
                 value,
-
             };
-
           }
         )
     );
-
   };
-
-
-  /* =================================
-     IDENTITY PROOF TYPE
-  ================================== */
-
-  const updateIdentityProofType = (
-    index: number,
-    value: string
-  ) => {
-
-    setGuests(
-      (current) =>
-        current.map(
-          (
-            guest,
-            guestIndex
-          ) =>
-            guestIndex ===
-            index
-              ? {
-
-                  ...guest,
-
-                  identityProofType:
-                    value,
-
-                  /*
-                   * Legacy compatibility.
-                   */
-                  identityProof:
-                    value,
-
-                }
-              : guest
-        )
-    );
-
-  };
-
-
-  /* =================================
-     IDENTITY PROOF NUMBER
-  ================================== */
-
-  const updateIdentityProofNumber = (
-    index: number,
-    value: string
-  ) => {
-
-    setGuests(
-      (current) =>
-        current.map(
-          (
-            guest,
-            guestIndex
-          ) =>
-            guestIndex ===
-            index
-              ? {
-
-                  ...guest,
-
-                  identityProofNumber:
-                    value,
-
-                  /*
-                   * Legacy compatibility.
-                   */
-                  aadhaar:
-                    value,
-
-                }
-              : guest
-        )
-    );
-
-  };
-
 
   /* =================================
      RELATIONSHIP PROOF TYPE
@@ -746,7 +616,6 @@ function Booking({
     index: number,
     value: string
   ) => {
-
     setGuests(
       (current) =>
         current.map(
@@ -757,19 +626,15 @@ function Booking({
             guestIndex ===
             index
               ? {
-
                   ...guest,
 
                   relationshipProofType:
                     value,
-
                 }
               : guest
         )
     );
-
   };
-
 
   /* =================================
      RELATIONSHIP PROOF NUMBER
@@ -779,7 +644,6 @@ function Booking({
     index: number,
     value: string
   ) => {
-
     setGuests(
       (current) =>
         current.map(
@@ -790,19 +654,15 @@ function Booking({
             guestIndex ===
             index
               ? {
-
                   ...guest,
 
                   relationshipProofNumber:
                     value,
-
                 }
               : guest
         )
     );
-
   };
-
 
   /* =================================
      CHECK-IN DATE CHANGE
@@ -811,77 +671,63 @@ function Booking({
   const handleCheckInChange = (
     value: string
   ) => {
-
+    const selectedValue = value
+      ? createDateTime(
+          getDatePart(value),
+          STANDARD_CHECK_IN_TIME
+        )
+      : "";
     const selectedDate =
       getDatePart(
-        value
+        selectedValue
       );
 
-
-    /*
-     * CURRENT:
-     * only today is permitted.
-     */
     if (
+      value &&
       bookingType ===
       "CURRENT" &&
       selectedDate !==
       today
     ) {
-
-      alert(
-        `CURRENT booking must start today (${today}).`
+      setCheckIn(selectedValue);
+      setCheckInError(
+        tr(
+          `CURRENT booking must start today (${today}).`,
+          `CURRENT बुकिंग आजच्या तारखेपासूनच सुरू झाली पाहिजे (${today}).`
+        )
       );
-
       return;
-
     }
 
-
-    /*
-     * ADVANCE:
-     * today and past dates are not
-     * permitted.
-     */
     if (
+      value &&
       bookingType ===
       "ADVANCE" &&
       selectedDate <=
       today
     ) {
-
-      alert(
-        `ADVANCE booking must start from tomorrow (${tomorrow}) or later.`
+      setCheckIn(selectedValue);
+      setCheckInError(
+        tr(
+          `ADVANCE booking must start from tomorrow (${tomorrow}) or later.`,
+          `ADVANCE बुकिंग उद्यापासून (${tomorrow}) किंवा त्यानंतरची असली पाहिजे.`
+        )
       );
-
       return;
-
     }
 
+    setCheckIn(selectedValue);
+    setCheckInError("");
 
-    setCheckIn(
-      value
-    );
-
-
-    /*
-     * Existing checkout becomes invalid
-     * if it is not after the new check-in.
-     */
     if (
       checkOut &&
       checkOut <=
-      value
+      selectedValue
     ) {
-
-      setCheckOut(
-        ""
-      );
-
+      setCheckOut("");
+      setCheckOutError("");
     }
-
   };
-
 
   /* =================================
      CHECK-OUT DATE CHANGE
@@ -890,27 +736,32 @@ function Booking({
   const handleCheckOutChange = (
     value: string
   ) => {
+    const selectedValue = value
+      ? createDateTime(
+          getDatePart(value),
+          STANDARD_CHECK_OUT_TIME
+        )
+      : "";
 
     if (
+      selectedValue &&
       checkIn &&
-      value <=
-      checkIn
+      getDatePart(selectedValue) <=
+      getDatePart(checkIn)
     ) {
-
-      alert(
-        "Check-out must be after check-in."
+      setCheckOut(selectedValue);
+      setCheckOutError(
+        tr(
+          "Check-out must be after check-in.",
+          "चेक-आउटची तारीख व वेळ चेक-इननंतरची असली पाहिजे."
+        )
       );
-
       return;
-
     }
 
-    setCheckOut(
-      value
-    );
-
+    setCheckOut(selectedValue);
+    setCheckOutError("");
   };
-
 
   /* =================================
      FORM VALIDATION
@@ -918,48 +769,65 @@ function Booking({
 
   const validateForm = () => {
 
-    /* =================================
-       SERVICEMAN
-    ================================== */
-
     if (
       !serviceman.number ||
       !serviceman.rank ||
       !serviceman.name ||
+      !serviceman.mobile ||
       !serviceman.address ||
-      !serviceman.identityNo
+      !serviceman.aadhaar
     ) {
-
-      alert(
-        "Please complete all Serving / Ex-Servicemen details."
+      window.alert(
+        tr(
+          "Please complete all Serving / Ex-Servicemen details.",
+          "कृपया सेवा बजावत असलेले / माजी सैनिक यांची सर्व माहिती पूर्ण करा."
+        )
       );
 
       return false;
-
     }
 
+    if (!/^\d{10}$/.test(serviceman.mobile)) {
+      window.alert(
+        tr(
+          "The booking person's mobile number must contain exactly 10 digits.",
+          "बुकिंग व्यक्तीचा मोबाईल क्रमांक नेमका १० अंकांचा असावा."
+        )
+      );
+      return false;
+    }
 
-    /* =================================
-       DATE PRESENCE
-    ================================== */
+    if (!serviceman.document) {
+      window.alert(
+        tr(
+          "Please upload the booking person's ID document.",
+          "कृपया बुकिंग व्यक्तीचे ओळखपत्र अपलोड करा."
+        )
+      );
+      return false;
+    }
+
+    if (!/^\d{12}$/.test(serviceman.aadhaar)) {
+      window.alert(tr(
+        "The booking person's Aadhaar number must contain exactly 12 digits.",
+        "बुकिंग व्यक्तीचा आधार क्रमांक नेमका १२ अंकांचा असावा."
+      ));
+      return false;
+    }
 
     if (
       !checkIn ||
       !checkOut
     ) {
-
-      alert(
-        "Please enter check-in and check-out date/time."
+      window.alert(
+        tr(
+          "Please enter check-in and check-out dates.",
+          "कृपया चेक-इन आणि चेक-आउटच्या तारखा प्रविष्ट करा."
+        )
       );
 
       return false;
-
     }
-
-
-    /* =================================
-       BOOKING TYPE DATE RULES
-    ================================== */
 
     const selectedCheckInDate =
       getDatePart(
@@ -971,114 +839,116 @@ function Booking({
         checkOut
       );
 
-
-    /*
-     * CURRENT must start today.
-     */
     if (
       bookingType ===
       "CURRENT" &&
       selectedCheckInDate !==
       today
     ) {
-
-      alert(
-        `CURRENT booking must start today (${today}).`
+      window.alert(
+        tr(
+          `CURRENT booking must start today (${today}).`,
+          `CURRENT बुकिंग आजच्या तारखेपासूनच सुरू झाली पाहिजे (${today}).`
+        )
       );
 
       return false;
-
     }
 
-
-    /*
-     * ADVANCE must start after today.
-     */
     if (
       bookingType ===
       "ADVANCE" &&
       selectedCheckInDate <=
       today
     ) {
-
-      alert(
-        `ADVANCE booking must start from tomorrow (${tomorrow}) or later.`
+      window.alert(
+        tr(
+          `ADVANCE booking must start from tomorrow (${tomorrow}) or later.`,
+          `ADVANCE बुकिंग उद्यापासून (${tomorrow}) किंवा त्यानंतरची असली पाहिजे.`
+        )
       );
 
       return false;
-
     }
 
-
-    /*
-     * Checkout must contain a date.
-     */
     if (
       !selectedCheckOutDate
     ) {
-
-      alert(
-        "Please enter a valid check-out date."
+      window.alert(
+        tr(
+          "Please enter a valid check-out date.",
+          "कृपया वैध चेक-आउट तारीख प्रविष्ट करा."
+        )
       );
 
       return false;
-
     }
 
-
-    /*
-     * Checkout must be strictly after
-     * check-in.
-     */
     if (
       new Date(checkOut) <=
       new Date(checkIn)
     ) {
-
-      alert(
-        "Check-out must be after check-in."
+      window.alert(
+        tr(
+          "Check-out must be after check-in.",
+          "चेक-आउटची तारीख व वेळ चेक-इननंतरची असली पाहिजे."
+        )
       );
 
       return false;
-
     }
-
-
-    /* =================================
-       GUEST VALIDATION
-    ================================== */
 
     for (
       let i = 0;
       i < guests.length;
       i++
     ) {
-
       const guest =
         guests[i];
 
+      if (!guest.gender) {
+        window.alert(
+          tr(
+            `Please select a gender for Guest ${i + 1}.`,
+            `कृपया अतिथी ${i + 1} साठी लिंग निवडा.`
+          )
+        );
+        return false;
+      }
 
       if (
         !guest.name ||
         !guest.relationship ||
         !guest.mobile ||
-        !guest.identityProofType ||
-        !guest.identityProofNumber
+        !guest.aadhaar ||
+        !guest.document
       ) {
-
-        alert(
-          `Please complete identity details for Guest ${i + 1}.`
+        window.alert(
+          tr(
+            `Complete identity details and upload a document for Guest ${i + 1}.`,
+            `अतिथी ${i + 1} ची ओळख माहिती पूर्ण करून दस्तऐवज अपलोड करा.`
+          )
         );
 
         return false;
-
       }
 
+      if (!/^\d{10}$/.test(guest.mobile)) {
+        window.alert(tr(
+          `Guest ${i + 1} mobile number must contain exactly 10 digits.`,
+          `अतिथी ${i + 1} चा मोबाईल क्रमांक नेमका १० अंकांचा असावा.`
+        ));
+        return false;
+      }
 
-      /*
-       * Relationship proof is required
-       * for everyone except SELF.
-       */
+      if (!/^\d{12}$/.test(guest.aadhaar)) {
+        window.alert(tr(
+          `Guest ${i + 1} Aadhaar number must contain exactly 12 digits.`,
+          `अतिथी ${i + 1} चा आधार क्रमांक नेमका १२ अंकांचा असावा.`
+        ));
+        return false;
+      }
+
       if (
         guest.relationship !==
           "SELF" &&
@@ -1087,77 +957,33 @@ function Booking({
           !guest.relationshipProofNumber
         )
       ) {
-
-        alert(
-          `Please complete relationship proof details for Guest ${i + 1}.`
+        window.alert(
+          tr(
+            `Please complete relationship proof details for Guest ${i + 1}.`,
+            `कृपया अतिथी ${i + 1} साठी नातेसंबंधाच्या पुराव्याची माहिती पूर्ण करा.`
+          )
         );
 
         return false;
-
       }
-
-    }
-
-
-    /* =================================
-       PAYMENT VALIDATION
-    ================================== */
-
-    if (
-      !payment.amount
-    ) {
-
-      alert(
-        "Please enter the paid amount."
-      );
-
-      return false;
-
-    }
-
-
-    if (
-      !payment.date
-    ) {
-
-      alert(
-        "Please enter the payment date."
-      );
-
-      return false;
-
     }
 
 
     return true;
-
   };
-
 
   /* =================================
      CONTINUE
   ================================== */
 
   const handleContinue = () => {
-
     if (
       !validateForm()
     ) {
-
       return;
-
     }
 
-
     onContinue({
-
-      /*
-       * New booking does not have a
-       * database ID yet.
-       *
-       * App.tsx receives the ID from
-       * the backend and adds it later.
-       */
       id: undefined,
 
       category,
@@ -1172,19 +998,14 @@ function Booking({
 
       checkOut,
 
-      payment,
-
     });
-
   };
-
 
   /* =================================
      UI
   ================================== */
 
   return (
-
     <main className="booking-screen">
 
       {/* =================================
@@ -1196,45 +1017,56 @@ function Booking({
         <div>
 
           <span className="section-label">
-
-            NEW BOOKING
-
+            {tr(
+              "NEW BOOKING",
+              "नवीन बुकिंग"
+            )}
           </span>
 
-
           <h1>
-
-            Accommodation Booking Form
-
+            {tr(
+              "Accommodation Booking Form",
+              "निवास बुकिंग फॉर्म"
+            )}
           </h1>
 
-
           <p>
-
             {categoryLabel}
-
-            {" accommodation"}
-
             {" • "}
-
-            Officer: {officerName}
-
+            {tr(
+              "Officer",
+              "अधिकारी"
+            )}
+            : {officerName}
           </p>
 
         </div>
 
-
-        <button
-          type="button"
-          className="availability-back-button"
-          onClick={
-            onBack
-          }
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "14px",
+            flexWrap: "wrap",
+            justifyContent: "flex-end",
+          }}
         >
 
-          ← Back
+          {languageSwitcher}
 
-        </button>
+          <button
+            type="button"
+            className="availability-back-button"
+            onClick={onBack}
+          >
+            ←{" "}
+            {tr(
+              "Back",
+              "मागे"
+            )}
+          </button>
+
+        </div>
 
       </header>
 
@@ -1288,11 +1120,11 @@ function Booking({
                     "6px",
                 }}
               >
-
-                Booking Type
-
+                {tr(
+                  "Booking Type",
+                  "बुकिंगचा प्रकार"
+                )}
               </div>
-
 
               <div
                 style={{
@@ -1301,11 +1133,10 @@ function Booking({
                     "#747d72",
                 }}
               >
-
-                Select whether the guest is
-                staying now or making a future
-                reservation.
-
+                {tr(
+                  "Select whether the guest is staying now or making a future reservation.",
+                  "अतिथी सध्या मुक्काम करणार आहे की भविष्यासाठी आरक्षण करणार आहे ते निवडा."
+                )}
               </div>
 
             </div>
@@ -1369,13 +1200,14 @@ function Booking({
                     "all 0.2s ease",
                 }}
               >
-
                 {bookingType ===
                   "CURRENT" &&
                   "✓ "}
 
-                CURRENT
-
+                {tr(
+                  "CURRENT",
+                  "सध्याचे"
+                )}
               </button>
 
 
@@ -1420,13 +1252,14 @@ function Booking({
                     "all 0.2s ease",
                 }}
               >
-
                 {bookingType ===
                   "ADVANCE" &&
                   "✓ "}
 
-                ADVANCE
-
+                {tr(
+                  "ADVANCE",
+                  "आगाऊ"
+                )}
               </button>
 
             </div>
@@ -1458,8 +1291,6 @@ function Booking({
             }}
           >
 
-            {/* CURRENT INFO */}
-
             <div
               onClick={() =>
                 handleBookingTypeChange(
@@ -1527,14 +1358,11 @@ function Booking({
                       "13px",
                   }}
                 >
-
                   {bookingType ===
                   "CURRENT"
                     ? "✓"
                     : "1"}
-
                 </span>
-
 
                 <strong
                   style={{
@@ -1544,13 +1372,13 @@ function Booking({
                       "#304633",
                   }}
                 >
-
-                  CURRENT
-
+                  {tr(
+                    "CURRENT",
+                    "सध्याचे"
+                  )}
                 </strong>
 
               </div>
-
 
               <div
                 style={{
@@ -1562,13 +1390,11 @@ function Booking({
                     "1.5",
                 }}
               >
-
-                Stay starts today.
-                The allotted room/bed will
-                represent the current stay.
-
+                {tr(
+                  "Stay starts today. The allotted room/bed will represent the current stay.",
+                  "मुक्काम आजपासून सुरू होतो. दिलेली खोली/बेड सध्याच्या मुक्कामासाठी असेल."
+                )}
               </div>
-
 
               <div
                 style={{
@@ -1584,16 +1410,15 @@ function Booking({
                     "#4b654d",
                 }}
               >
-
-                CHECK-IN: {today}
-
+                {tr(
+                  "CHECK-IN",
+                  "चेक-इन"
+                )}: {today}
               </div>
 
             </div>
 
 
-            {/* ADVANCE INFO */}
-
             <div
               onClick={() =>
                 handleBookingTypeChange(
@@ -1661,14 +1486,11 @@ function Booking({
                       "13px",
                   }}
                 >
-
                   {bookingType ===
                   "ADVANCE"
                     ? "✓"
                     : "2"}
-
                 </span>
-
 
                 <strong
                   style={{
@@ -1678,13 +1500,13 @@ function Booking({
                       "#304633",
                   }}
                 >
-
-                  ADVANCE
-
+                  {tr(
+                    "ADVANCE",
+                    "आगाऊ"
+                  )}
                 </strong>
 
               </div>
-
 
               <div
                 style={{
@@ -1696,14 +1518,11 @@ function Booking({
                     "1.5",
                 }}
               >
-
-                Future reservation.
-                The allotted room/bed will
-                remain booked until the stay
-                begins.
-
+                {tr(
+                  "Future reservation. The allotted room/bed will remain booked until the stay begins.",
+                  "भविष्यातील आरक्षण. मुक्काम सुरू होईपर्यंत दिलेली खोली/बेड आरक्षित राहील."
+                )}
               </div>
-
 
               <div
                 style={{
@@ -1719,9 +1538,14 @@ function Booking({
                     "#4b654d",
                 }}
               >
-
-                CHECK-IN: {tomorrow} OR LATER
-
+                {tr(
+                  "CHECK-IN",
+                  "चेक-इन"
+                )}: {tomorrow}{" "}
+                {tr(
+                  "OR LATER",
+                  "किंवा त्यानंतर"
+                )}
               </div>
 
             </div>
@@ -1745,20 +1569,20 @@ function Booking({
             01
           </span>
 
-
           <div>
 
             <h2>
-
-              Serving / Ex-Servicemen Information
-
+              {tr(
+                "Serving / Ex-Servicemen Information",
+                "सेवारत / माजी सैनिकांची माहिती"
+              )}
             </h2>
 
-
             <p>
-
-              Enter the details of the serviceman.
-
+              {tr(
+                "Enter the details of the serviceman.",
+                "सैनिकाची माहिती प्रविष्ट करा."
+              )}
             </p>
 
           </div>
@@ -1771,9 +1595,11 @@ function Booking({
           <div className="form-field">
 
             <label>
-              Number *
+              {tr(
+                "Number *",
+                "क्रमांक *"
+              )}
             </label>
-
 
             <input
               value={
@@ -1785,7 +1611,10 @@ function Booking({
                   e.target.value
                 )
               }
-              placeholder="Service / Registration No."
+              placeholder={tr(
+                "Service / Registration No.",
+                "सेवा / नोंदणी क्रमांक"
+              )}
             />
 
           </div>
@@ -1794,9 +1623,11 @@ function Booking({
           <div className="form-field">
 
             <label>
-              Rank *
+              {tr(
+                "Rank *",
+                "हुद्दा *"
+              )}
             </label>
-
 
             <input
               value={
@@ -1808,7 +1639,10 @@ function Booking({
                   e.target.value
                 )
               }
-              placeholder="Rank"
+              placeholder={tr(
+                "Rank",
+                "हुद्दा"
+              )}
             />
 
           </div>
@@ -1817,9 +1651,11 @@ function Booking({
           <div className="form-field">
 
             <label>
-              Name *
+              {tr(
+                "Name *",
+                "नाव *"
+              )}
             </label>
-
 
             <input
               value={
@@ -1831,7 +1667,10 @@ function Booking({
                   e.target.value
                 )
               }
-              placeholder="Full name"
+              placeholder={tr(
+                "Full name",
+                "पूर्ण नाव"
+              )}
             />
 
           </div>
@@ -1840,9 +1679,11 @@ function Booking({
           <div className="form-field full">
 
             <label>
-              Address *
+              {tr(
+                "Address *",
+                "पत्ता *"
+              )}
             </label>
-
 
             <textarea
               value={
@@ -1854,33 +1695,61 @@ function Booking({
                   e.target.value
                 )
               }
-              placeholder="Complete address"
+              placeholder={tr(
+                "Complete address",
+                "पूर्ण पत्ता"
+              )}
               rows={3}
             />
 
           </div>
 
-
           <div className="form-field">
-
-            <label>
-              Identity No. *
-            </label>
-
-
+            <label>{tr("Mobile Number *", "मोबाईल क्रमांक *")}</label>
             <input
-              value={
-                serviceman.identityNo
-              }
-              onChange={(e) =>
+              inputMode="numeric"
+              maxLength={10}
+              value={serviceman.mobile}
+              onChange={(event) =>
                 updateServiceman(
-                  "identityNo",
-                  e.target.value
+                  "mobile",
+                  event.target.value.replace(/\D/g, "")
                 )
               }
-              placeholder="Identity number"
+              placeholder={tr("10-digit mobile number", "१० अंकी मोबाईल क्रमांक")}
             />
+          </div>
 
+
+          <div className="form-field">
+            <label>{tr("Aadhaar Number *", "आधार क्रमांक *")}</label>
+            <input
+              inputMode="numeric"
+              maxLength={12}
+              value={serviceman.aadhaar}
+              onChange={(e) =>
+                updateServiceman("aadhaar", e.target.value.replace(/\D/g, ""))
+              }
+              placeholder="12 digits"
+            />
+          </div>
+
+          <div className="form-field">
+            <label>{tr("Booking person's ID document *", "बुकिंग व्यक्तीचे ओळखपत्र *")}</label>
+            <input
+              type="file"
+              required
+              accept="application/pdf,image/jpeg,image/png"
+              onChange={(event) => {
+                const file = event.target.files?.[0] ?? null;
+                if (file && file.size > 5 * 1024 * 1024) {
+                  window.alert(tr("Each document must be 5 MB or smaller.", "प्रत्येक दस्तऐवज ५ MB किंवा त्यापेक्षा कमी असावा."));
+                  event.target.value = "";
+                  return;
+                }
+                setServiceman((current) => ({ ...current, document: file }));
+              }}
+            />
           </div>
 
         </div>
@@ -1900,16 +1769,20 @@ function Booking({
             02
           </span>
 
-
           <div>
 
             <h2>
-              Guest / Occupant Information
+              {tr(
+                "Guest / Occupant Information",
+                "अतिथी / रहिवासी माहिती"
+              )}
             </h2>
 
-
             <p>
-              Enter the details of every person staying.
+              {tr(
+                "Enter the details of every person staying.",
+                "मुक्काम करणाऱ्या प्रत्येक व्यक्तीची माहिती प्रविष्ट करा."
+              )}
             </p>
 
           </div>
@@ -1920,34 +1793,47 @@ function Booking({
         <div className="guest-count">
 
           <label>
-            Number of Guests / Occupants *
+            {tr(
+              "Number of Guests / Occupants *",
+              "अतिथी / रहिवाशांची संख्या *"
+            )}
           </label>
-
 
           <input
             type="number"
             min="1"
             max="10"
-            value={
-              guestCount
+            value={guestCountInput}
+            onChange={(event) =>
+              handleGuestCountChange(event.target.value)
             }
-            onChange={(e) =>
-              handleGuestCountChange(
-                Number(
-                  e.target.value
-                )
-              )
-            }
+            onBlur={() => {
+              if (!guestCountInput) {
+                setGuestCountInput(String(guestCount));
+              }
+            }}
           />
 
-
           <span>
-
             {guestCount === 1
-              ? "1 bed will be required"
-              : `${guestCount} beds will be required`}
-
+              ? tr(
+                  "1 guest will be included",
+                  "१ अतिथी समाविष्ट असेल"
+                )
+              : `${guestCount} ${tr(
+                  "guests will be included",
+                  "अतिथी समाविष्ट असतील"
+                )}`}
           </span>
+
+          <button
+            type="button"
+            className="add-guest-button"
+            onClick={handleAddGuest}
+            disabled={guestCount >= 10}
+          >
+            {tr("ADD GUEST / OCCUPANT +", "अतिथी / रहिवासी जोडा +")}
+          </button>
 
         </div>
 
@@ -1964,25 +1850,26 @@ function Booking({
             >
 
               <h3>
-
-                Guest / Occupant{" "}
+                {tr(
+                  "Guest / Occupant",
+                  "अतिथी / रहिवासी"
+                )}{" "}
                 {index + 1}
-
               </h3>
 
 
               <div className="booking-grid">
 
-                {/* =========================
-                    NAME
-                ========================== */}
+                {/* NAME */}
 
                 <div className="form-field">
 
                   <label>
-                    Name *
+                    {tr(
+                      "Name *",
+                      "नाव *"
+                    )}
                   </label>
-
 
                   <input
                     value={
@@ -1995,22 +1882,60 @@ function Booking({
                         e.target.value
                       )
                     }
-                    placeholder="Guest name"
+                    placeholder={tr(
+                      "Guest name",
+                      "अतिथीचे नाव"
+                    )}
                   />
 
                 </div>
 
+                <div className="form-field">
+                  <label>
+                    {tr("Gender *", "लिंग *")}
+                  </label>
+                  <select
+                    value={guest.gender}
+                    onChange={(event) =>
+                      updateGuest(index, "gender", event.target.value)
+                    }
+                    required
+                  >
+                    <option value="">
+                      {tr("Select gender", "लिंग निवडा")}
+                    </option>
+                    <option value="MALE">
+                      {tr("Male", "पुरुष")}
+                    </option>
+                    <option value="FEMALE">
+                      {tr("Female", "महिला")}
+                    </option>
+                  </select>
+                </div>
 
-                {/* =========================
-                    RELATIONSHIP
-                ========================== */}
+                <div className="form-field full">
+                  <label>{tr("Address", "पत्ता")}</label>
+                  <textarea
+                    rows={2}
+                    value={guest.address}
+                    onChange={(event) =>
+                      updateGuest(index, "address", event.target.value)
+                    }
+                    placeholder={tr("Guest address", "अतिथीचा पत्ता")}
+                  />
+                </div>
+
+
+                {/* RELATIONSHIP */}
 
                 <div className="form-field">
 
                   <label>
-                    Relationship with Soldier *
+                    {tr(
+                      "Relationship with Soldier *",
+                      "सैनिकाशी नाते *"
+                    )}
                   </label>
-
 
                   <select
                     value={
@@ -2026,29 +1951,63 @@ function Booking({
                   >
 
                     <option value="">
-                      Select relationship
+                      {tr(
+                        "Select relationship",
+                        "नाते निवडा"
+                      )}
                     </option>
-
 
                     {relationshipOptions.map(
                       (
                         relationship
-                      ) => (
+                      ) => {
 
-                        <option
-                          key={
-                            relationship
-                          }
-                          value={
-                            relationship
-                          }
-                        >
+                        const relationshipLabel =
+                          relationship === "SELF"
+                            ? tr(
+                                "SELF",
+                                "स्वतः"
+                              )
+                            : relationship === "WIFE"
+                            ? tr(
+                                "WIFE",
+                                "पत्नी"
+                              )
+                            : relationship === "SON"
+                            ? tr(
+                                "SON",
+                                "मुलगा"
+                              )
+                            : relationship === "DAUGHTER"
+                            ? tr(
+                                "DAUGHTER",
+                                "मुलगी"
+                              )
+                            : relationship === "MOTHER"
+                            ? tr(
+                                "MOTHER",
+                                "आई"
+                              )
+                            : tr(
+                                "FATHER",
+                                "वडील"
+                              );
 
-                          {relationship}
-
-                        </option>
-
-                      )
+                        return (
+                          <option
+                            key={
+                              relationship
+                            }
+                            value={
+                              relationship
+                            }
+                          >
+                            {
+                              relationshipLabel
+                            }
+                          </option>
+                        );
+                      }
                     )}
 
                   </select>
@@ -2056,18 +2015,20 @@ function Booking({
                 </div>
 
 
-                {/* =========================
-                    MOBILE
-                ========================== */}
+                {/* MOBILE */}
 
                 <div className="form-field">
 
                   <label>
-                    Mobile Number *
+                    {tr(
+                      "Mobile Number *",
+                      "मोबाईल क्रमांक *"
+                    )}
                   </label>
 
-
                   <input
+                    inputMode="numeric"
+                    maxLength={10}
                     value={
                       guest.mobile
                     }
@@ -2075,131 +2036,60 @@ function Booking({
                       updateGuest(
                         index,
                         "mobile",
-                        e.target.value
+                        e.target.value.replace(/\D/g, "")
                       )
                     }
-                    placeholder="Mobile number"
+                    placeholder={tr(
+                      "Mobile number",
+                      "मोबाईल क्रमांक"
+                    )}
                   />
 
                 </div>
 
 
-                {/* =========================
-                    IDENTITY PROOF TYPE
-                ========================== */}
-
                 <div className="form-field">
-
-                  <label>
-                    Identity Proof Type *
-                  </label>
-
-
-                  <select
-                    value={
-                      guest.identityProofType
-                    }
-                    onChange={(e) =>
-                      updateIdentityProofType(
-                        index,
-                        e.target.value
-                      )
-                    }
-                    disabled={
-                      !guest.relationship
-                    }
-                  >
-
-                    <option value="">
-
-                      {guest.relationship
-                        ? "Select identity proof"
-                        : "Select relationship first"}
-
-                    </option>
-
-
-                    {guest.relationship ===
-                    "SELF"
-                      ? selfIdentityProofOptions.map(
-                          (
-                            proof
-                          ) => (
-
-                            <option
-                              key={
-                                proof
-                              }
-                              value={
-                                proof
-                              }
-                            >
-
-                              {proof}
-
-                            </option>
-
-                          )
-                        )
-                      : relativeIdentityProofOptions.map(
-                          (
-                            proof
-                          ) => (
-
-                            <option
-                              key={
-                                proof
-                              }
-                              value={
-                                proof
-                              }
-                            >
-
-                              {proof}
-
-                            </option>
-
-                          )
-                        )}
-
-                  </select>
-
-                </div>
-
-
-                {/* =========================
-                    IDENTITY PROOF NUMBER
-                ========================== */}
-
-                <div className="form-field">
-
-                  <label>
-                    Identity Proof Number *
-                  </label>
-
-
+                  <label>{tr("Aadhaar Number *", "आधार क्रमांक *")}</label>
                   <input
-                    value={
-                      guest.identityProofNumber
-                    }
+                    inputMode="numeric"
+                    maxLength={12}
+                    value={guest.aadhaar}
                     onChange={(e) =>
-                      updateIdentityProofNumber(
+                      updateGuest(
                         index,
-                        e.target.value
+                        "aadhaar",
+                        e.target.value.replace(/\D/g, "")
                       )
                     }
-                    placeholder="Identity proof number"
-                    disabled={
-                      !guest.relationship
-                    }
+                    placeholder="12 digits"
                   />
-
+                </div>
+                <div className="form-field">
+                  <label>{tr("Occupant ID document *", "अतिथीचे ओळखपत्र *")}</label>
+                  <input
+                    type="file"
+                    required
+                    accept="application/pdf,image/jpeg,image/png"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0] ?? null;
+                      if (file && file.size > 5 * 1024 * 1024) {
+                        window.alert(tr("Each document must be 5 MB or smaller.", "प्रत्येक दस्तऐवज ५ MB किंवा त्यापेक्षा कमी असावा."));
+                        event.target.value = "";
+                        return;
+                      }
+                      setGuests((current) =>
+                        current.map((item, itemIndex) =>
+                          itemIndex === index
+                            ? { ...item, document: file }
+                            : item
+                        )
+                      );
+                    }}
+                  />
                 </div>
 
 
-                {/* =========================
-                    RELATIONSHIP PROOF
-                ========================== */}
+                {/* RELATIONSHIP PROOF */}
 
                 {guest.relationship &&
                   guest.relationship !==
@@ -2210,9 +2100,11 @@ function Booking({
                       <div className="form-field">
 
                         <label>
-                          Relationship Proof Type *
+                          {tr(
+                            "Relationship Proof Type *",
+                            "नातेसंबंधाच्या पुराव्याचा प्रकार *"
+                          )}
                         </label>
-
 
                         <select
                           value={
@@ -2227,15 +2119,16 @@ function Booking({
                         >
 
                           <option value="">
-                            Select relationship proof
+                            {tr(
+                              "Select relationship proof",
+                              "नातेसंबंधाचा पुरावा निवडा"
+                            )}
                           </option>
-
 
                           {relationshipProofOptions.map(
                             (
                               proof
                             ) => (
-
                               <option
                                 key={
                                   proof
@@ -2244,11 +2137,8 @@ function Booking({
                                   proof
                                 }
                               >
-
                                 {proof}
-
                               </option>
-
                             )
                           )}
 
@@ -2260,9 +2150,11 @@ function Booking({
                       <div className="form-field">
 
                         <label>
-                          Relationship Proof Number *
+                          {tr(
+                            "Relationship Proof Number *",
+                            "नातेसंबंधाचा पुरावा क्रमांक *"
+                          )}
                         </label>
-
 
                         <input
                           value={
@@ -2274,7 +2166,10 @@ function Booking({
                               e.target.value
                             )
                           }
-                          placeholder="Relationship proof number"
+                          placeholder={tr(
+                            "Relationship proof number",
+                            "नातेसंबंधाचा पुरावा क्रमांक"
+                          )}
                         />
 
                       </div>
@@ -2286,7 +2181,6 @@ function Booking({
               </div>
 
             </div>
-
           )
         )}
 
@@ -2305,26 +2199,26 @@ function Booking({
             03
           </span>
 
-
           <div>
 
             <h2>
-              Duration of Stay
+              {tr(
+                "Duration of Stay",
+                "मुक्कामाचा कालावधी"
+              )}
             </h2>
 
-
             <p>
-              Enter the complete stay duration.
+              {tr(
+                "Enter the complete stay duration.",
+                "संपूर्ण मुक्कामाचा कालावधी प्रविष्ट करा."
+              )}
             </p>
 
           </div>
 
         </div>
 
-
-        {/* =================================
-            DATE TYPE SUMMARY
-        ================================== */}
 
         <div
           style={{
@@ -2370,14 +2264,17 @@ function Booking({
                   "uppercase",
               }}
             >
-
               {bookingType ===
               "CURRENT"
-                ? "CURRENT STAY"
-                : "ADVANCE RESERVATION"}
-
+                ? tr(
+                    "CURRENT STAY",
+                    "सध्याचा मुक्काम"
+                  )
+                : tr(
+                    "ADVANCE RESERVATION",
+                    "आगाऊ आरक्षण"
+                  )}
             </div>
-
 
             <div
               style={{
@@ -2389,16 +2286,19 @@ function Booking({
                   "#6e776b",
               }}
             >
-
               {bookingType ===
               "CURRENT"
-                ? `Check-in must be today (${today}).`
-                : `Check-in must be ${tomorrow} or later.`}
-
+                ? tr(
+                    `Check-in must be today (${today}).`,
+                    `चेक-इन आजच्या तारखेला असणे आवश्यक आहे (${today}).`
+                  )
+                : tr(
+                    `Check-in must be ${tomorrow} or later.`,
+                    `चेक-इन ${tomorrow} किंवा त्यानंतर असणे आवश्यक आहे.`
+                  )}
             </div>
 
           </div>
-
 
           <div
             style={{
@@ -2412,12 +2312,16 @@ function Booking({
                 "#355d3b",
             }}
           >
-
             {bookingType ===
             "CURRENT"
-              ? "CURRENT → OCCUPIED"
-              : "ADVANCE → BOOKED"}
-
+              ? tr(
+                  "CURRENT → OCCUPIED",
+                  "सध्याचे → व्यापलेले"
+                )
+              : tr(
+                  "ADVANCE → BOOKED",
+                  "आगाऊ → आरक्षित"
+                )}
           </div>
 
         </div>
@@ -2428,34 +2332,46 @@ function Booking({
           <div className="form-field">
 
             <label>
-              From Date &amp; Time *
+              {tr(
+                "Check-In Date *",
+                "चेक-इन तारीख *"
+              )}
             </label>
 
-
             <input
-              type="datetime-local"
+              type="date"
               min={
                 bookingType ===
                 "CURRENT"
-                  ? `${today}T00:00`
-                  : `${tomorrow}T00:00`
+                  ? today
+                  : tomorrow
               }
               max={
                 bookingType ===
                 "CURRENT"
-                  ? `${today}T23:59`
+                  ? today
                   : undefined
               }
               value={
-                checkIn
+                getDatePart(checkIn)
               }
               onChange={(e) =>
                 handleCheckInChange(
                   e.target.value
                 )
               }
+              aria-invalid={Boolean(checkInError)}
+              aria-describedby={checkInError ? "booking-check-in-error" : undefined}
             />
-
+            {checkInError && (
+              <small
+                id="booking-check-in-error"
+                className="booking-field-error"
+                role="alert"
+              >
+                {checkInError}
+              </small>
+            )}
 
             <small
               style={{
@@ -2469,12 +2385,16 @@ function Booking({
                   "11px",
               }}
             >
-
               {bookingType ===
               "CURRENT"
-                ? `Today only: ${today}`
-                : `Tomorrow onward: ${tomorrow} or later`}
-
+                ? tr(
+                    `Today only: ${today}`,
+                    `फक्त आज: ${today}`
+                  )
+                : tr(
+                    `Tomorrow onward: ${tomorrow} or later`,
+                    `उद्यापासून: ${tomorrow} किंवा त्यानंतर`
+                  )}
             </small>
 
           </div>
@@ -2483,26 +2403,39 @@ function Booking({
           <div className="form-field">
 
             <label>
-              To Date &amp; Time *
+              {tr(
+                "Check-Out Date *",
+                "चेक-आउट तारीख *"
+              )}
             </label>
 
-
             <input
-              type="datetime-local"
+              type="date"
               min={
-                checkIn ||
-                undefined
+                checkIn
+                  ? getNextDate(getDatePart(checkIn))
+                  : undefined
               }
               value={
-                checkOut
+                getDatePart(checkOut)
               }
               onChange={(e) =>
                 handleCheckOutChange(
                   e.target.value
                 )
               }
+              aria-invalid={Boolean(checkOutError)}
+              aria-describedby={checkOutError ? "booking-check-out-error" : undefined}
             />
-
+            {checkOutError && (
+              <small
+                id="booking-check-out-error"
+                className="booking-field-error"
+                role="alert"
+              >
+                {checkOutError}
+              </small>
+            )}
 
             <small
               style={{
@@ -2516,188 +2449,33 @@ function Booking({
                   "11px",
               }}
             >
-
-              Must be after the check-in
-              date and time.
-
+              {tr(
+                "Must be after the check-in date.",
+                "चेक-इनच्या तारखेनंतरची तारीख असणे आवश्यक आहे."
+              )}
             </small>
 
           </div>
 
         </div>
 
-      </section>
-
-
-      {/* =================================
-          SECTION 4
-      ================================== */}
-
-      <section className="booking-card">
-
-        <div className="booking-section-title">
-
-          <span>
-            04
-          </span>
-
-
-          <div>
-
-            <h2>
-              Payment Details
-            </h2>
-
-
-            <p>
-              Record the amount received.
-            </p>
-
-          </div>
-
-        </div>
-
-
-        <div className="booking-grid">
-
-          <div className="form-field">
-
-            <label>
-              Payment Mode *
-            </label>
-
-
-            <select
-              value={
-                payment.mode
-              }
-              onChange={(e) =>
-                setPayment(
-                  (current) => ({
-
-                    ...current,
-
-                    mode:
-                      e.target.value,
-
-                  })
-                )
-              }
-            >
-
-              <option value="Cash">
-                Cash
-              </option>
-
-
-              <option value="Online">
-                Online
-              </option>
-
-
-              <option value="UPI">
-                UPI
-              </option>
-
-
-              <option value="Cheque">
-                Cheque
-              </option>
-
-            </select>
-
-          </div>
-
-
-          <div className="form-field">
-
-            <label>
-              Online Transaction No.
-            </label>
-
-
-            <input
-              value={
-                payment.transactionNo
-              }
-              onChange={(e) =>
-                setPayment(
-                  (current) => ({
-
-                    ...current,
-
-                    transactionNo:
-                      e.target.value,
-
-                  })
-                )
-              }
-              placeholder="Transaction number"
-            />
-
-          </div>
-
-
-          <div className="form-field">
-
-            <label>
-              Date *
-            </label>
-
-
-            <input
-              type="date"
-              value={
-                payment.date
-              }
-              onChange={(e) =>
-                setPayment(
-                  (current) => ({
-
-                    ...current,
-
-                    date:
-                      e.target.value,
-
-                  })
-                )
-              }
-            />
-
-          </div>
-
-
-          <div className="form-field">
-
-            <label>
-              Paid Amount *
-            </label>
-
-
-            <input
-              type="number"
-              min="0"
-              value={
-                payment.amount
-              }
-              onChange={(e) =>
-                setPayment(
-                  (current) => ({
-
-                    ...current,
-
-                    amount:
-                      e.target.value,
-
-                  })
-                )
-              }
-              placeholder="₹ Amount"
-            />
-
-          </div>
-
-        </div>
+        <p
+          style={{
+            margin: "14px 0 0",
+            padding: "10px 12px",
+            borderRadius: "8px",
+            background: "#f2f7f0",
+            color: "#355d3b",
+            fontSize: "12px",
+            lineHeight: 1.5,
+          }}
+          role="note"
+        >
+          {tr(
+            `Standard check-out is ${STANDARD_CHECK_OUT_TIME} (12:00 PM) and check-in starts at ${STANDARD_CHECK_IN_TIME} (2:00 PM). Same-day room reuse requires the previous guest to check out, a minimum ${TURNOVER_BUFFER_HOURS}-hour turnover buffer, and housekeeping clearance.`,
+            `नियमित चेक-आउट दुपारी १२:०० वाजता आणि चेक-इन दुपारी २:०० नंतर आहे. त्याच दिवशी खोली पुन्हा देण्यासाठी मागील अतिथीचा चेक-आउट, किमान ${TURNOVER_BUFFER_HOURS} तासांचा अवधी आणि हाऊसकीपिंगची मंजुरी आवश्यक आहे.`
+          )}
+        </p>
 
       </section>
 
@@ -2711,13 +2489,12 @@ function Booking({
         <button
           type="button"
           className="secondary-action"
-          onClick={
-            onBack
-          }
+          onClick={onBack}
         >
-
-          CANCEL
-
+          {tr(
+            "CANCEL",
+            "रद्द करा"
+          )}
         </button>
 
 
@@ -2728,17 +2505,16 @@ function Booking({
             handleContinue
           }
         >
-
-          CONTINUE TO SEAT MATRIX →
-
+          {tr(
+            "CONTINUE TO SEAT MATRIX →",
+            "सीट मॅट्रिक्सकडे पुढे जा →"
+          )}
         </button>
 
       </div>
 
     </main>
-
   );
-
 }
 
 export default Booking;

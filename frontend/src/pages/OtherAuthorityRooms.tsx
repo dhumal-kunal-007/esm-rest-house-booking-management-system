@@ -4,105 +4,73 @@ import {
 } from "react";
 
 import "../App.css";
+import { apiFetch } from "../api";
 
 import type {
   UserRole,
 } from "../App";
 
+import { useLanguage } from "../i18n/LanguageContext";
 
 /* =========================================
    ROOM
 ========================================= */
 
 interface AuthorityRoom {
-
   id: string;
-
   room_number: string;
-
   total_beds: number;
-
   room_status: string;
-
   is_active: boolean;
-
   category_name: string;
 
   receptionist_can_book: boolean;
-
   receptionist_can_allot: boolean;
-
   receptionist_emergency_allot: boolean;
 
   authority_role: string;
-
   authority_can_book: boolean;
-
   authority_can_allot: boolean;
-
   authority_can_approve: boolean;
-
 }
-
 
 /* =========================================
    BED
 ========================================= */
 
 interface RoomBed {
-
   id: string;
-
   room_id: string;
-
   bed_number: number;
-
   bed_status: string;
-
   is_active: boolean;
-
 }
-
 
 /* =========================================
    EXPLICIT AUTHORITY SELECTION
 ========================================= */
 
 export interface ExplicitAuthoritySelection {
-
   roomId: string;
-
   roomNumber: string;
-
   categoryName: string;
-
   authorityRole: string;
-
   bedId?: string;
-
   bedNumber?: number;
-
   isMatrixRoom: boolean;
-
 }
-
 
 /* =========================================
    PROPS
 ========================================= */
 
 interface OtherAuthorityRoomsProps {
-
   role: UserRole;
-
   onBack: () => void;
-
   onContinue: (
     selection: ExplicitAuthoritySelection
   ) => void;
-
 }
-
 
 /* =========================================
    AUTHORITY DISPLAY NAME
@@ -111,143 +79,138 @@ interface OtherAuthorityRoomsProps {
 const getAuthorityDisplayName = (
   role: string
 ) => {
-
   switch (role) {
-
     case "DY_DIRECTOR":
-
       return "Deputy Director";
 
-
     case "SUPERINTENDENT":
-
       return "Superintendent";
 
-
     case "WELFARE_ORGANISER":
-
       return "Welfare Organizer";
 
-
     case "OLC_REST_HOUSE_MANAGER":
-
       return "OLC Rest House Manager";
 
+    case "RECEPTIONIST":
+      return "Receptionist";
+
+    case "ADMIN":
+      return "Administrator";
 
     default:
-
       return role;
-
   }
-
 };
 
-
 /* =========================================
-   CHECK MATRIX ROOM
+   MATRIX ROOM CHECK
+
+   IMPORTANT:
+   Only DM / HALL are matrix rooms.
+
+   AC / VIP / NAC remain room-selection
+   rooms.
 ========================================= */
 
 const isMatrixRoom = (
   room: AuthorityRoom
 ) => {
+  const category = String(
+    room.category_name || ""
+  ).toUpperCase();
 
-  const category =
-    String(
-      room.category_name || ""
-    ).toUpperCase();
-
-  const roomName =
-    String(
-      room.room_number || ""
-    ).toUpperCase();
+  const roomName = String(
+    room.room_number || ""
+  ).toUpperCase();
 
   return (
-
-    category === "DORMITORY"
-
-    ||
-
-    category === "HALL"
-
-    ||
-
-    roomName.startsWith("DM")
-
-    ||
-
+    category === "DORMITORY" ||
+    category === "HALL" ||
+    roomName.startsWith("DM") ||
     roomName === "HALL"
-
   );
-
 };
 
+/* =========================================
+   ROOM TYPE
+========================================= */
+
+const getRoomType = (
+  room: AuthorityRoom
+) => {
+  const category = String(
+    room.category_name || ""
+  ).toUpperCase();
+
+  const roomName = String(
+    room.room_number || ""
+  ).toUpperCase();
+
+  if (
+    roomName.includes("VIP") ||
+    category === "VIP" ||
+    category === "AC_VIP"
+  ) {
+    return "VIP";
+  }
+
+  if (
+    roomName.startsWith("AC") ||
+    category === "AC"
+  ) {
+    return "AC";
+  }
+
+  if (
+    roomName.startsWith("NAC") ||
+    category === "NAC" ||
+    category === "NON_AC"
+  ) {
+    return "NAC";
+  }
+
+  if (
+    roomName.startsWith("DM") ||
+    category === "DM" ||
+    category === "DORMITORY"
+  ) {
+    return "DM";
+  }
+
+  if (
+    roomName === "HALL" ||
+    category === "HALL"
+  ) {
+    return "HALL";
+  }
+
+  return "OTHER";
+};
 
 /* =========================================
    CHRONOLOGICAL ROOM SORT
-=========================================
-
-   Examples:
-
-   AC 1
-   AC 2
-   AC 3
-   ...
-   AC 9
-   AC 11
-   AC 12
-   ...
-
-   DM1
-   DM2
-   DM3
-   ...
-
-   This prevents alphabetical ordering such as:
-
-   AC 1
-   AC 11
-   AC 12
-   AC 2
 ========================================= */
 
 const getRoomNumberValue = (
   roomNumber: string
 ) => {
-
-  const match =
-    String(
-      roomNumber || ""
-    ).match(
-      /\d+/
-    );
-
+  const match = String(
+    roomNumber || ""
+  ).match(/\d+/);
 
   if (!match) {
-
     return Number.MAX_SAFE_INTEGER;
-
   }
 
-
-  return Number(
-    match[0]
-  );
-
+  return Number(match[0]);
 };
-
 
 const sortRoomsChronologically = (
   roomList: AuthorityRoom[]
 ) => {
-
-  return [
-    ...roomList,
-  ].sort(
-    (
-      first,
-      second
-    ) => {
-
+  return [...roomList].sort(
+    (first, second) => {
       const firstNumber =
         getRoomNumberValue(
           first.room_number
@@ -258,37 +221,15 @@ const sortRoomsChronologically = (
           second.room_number
         );
 
-
-      /*
-       * First sort by room number.
-       *
-       * This gives:
-       *
-       * AC 1
-       * AC 2
-       * AC 3
-       * ...
-       * AC 24
-       */
-
       if (
         firstNumber !==
         secondNumber
       ) {
-
         return (
           firstNumber -
           secondNumber
         );
-
       }
-
-
-      /*
-       * If two rooms have the same
-       * numeric portion, sort by
-       * the room name.
-       */
 
       return String(
         first.room_number
@@ -302,429 +243,515 @@ const sortRoomsChronologically = (
           sensitivity: "base",
         }
       );
-
     }
   );
-
 };
-
 
 /* =========================================
    COMPONENT
 ========================================= */
 
 function OtherAuthorityRooms({
-
   role,
-
   onBack,
-
   onContinue,
-
 }: OtherAuthorityRoomsProps) {
+  const {
+    language,
+    setLanguage,
+  } = useLanguage();
 
+  const isMarathi =
+    language === "mr";
+
+  const tr = (
+    english: string,
+    marathi: string
+  ) =>
+    isMarathi
+      ? marathi
+      : english;
 
   /* =========================================
      ROOMS
-  ========================================= */
+  ========================================== */
 
   const [
     rooms,
     setRooms,
-  ] = useState<
-    AuthorityRoom[]
-  >([]);
-
+  ] = useState<AuthorityRoom[]>([]);
 
   /* =========================================
      SELECTED ROOM
-  ========================================= */
+  ========================================== */
 
   const [
     selectedRoom,
     setSelectedRoom,
-  ] = useState<
-    AuthorityRoom | null
-  >(null);
-
+  ] = useState<AuthorityRoom | null>(
+    null
+  );
 
   /* =========================================
      BEDS
-  ========================================= */
+  ========================================== */
 
   const [
     beds,
     setBeds,
-  ] = useState<
-    RoomBed[]
-  >([]);
-
+  ] = useState<RoomBed[]>([]);
 
   /* =========================================
      SELECTED BED
-  ========================================= */
+  ========================================== */
 
   const [
     selectedBed,
     setSelectedBed,
-  ] = useState<
-    RoomBed | null
-  >(null);
-
+  ] = useState<RoomBed | null>(
+    null
+  );
 
   /* =========================================
      LOADING
-  ========================================= */
+  ========================================== */
 
   const [
     loadingRooms,
     setLoadingRooms,
   ] = useState(true);
 
-
   const [
     loadingBeds,
     setLoadingBeds,
   ] = useState(false);
 
-
   /* =========================================
      ERROR
-  ========================================= */
+  ========================================== */
 
   const [
     error,
     setError,
   ] = useState("");
 
+  /* =========================================
+     LANGUAGE SWITCHER
+  ========================================== */
+
+  const languageSwitcher = (
+    <div
+      className="language-switcher"
+      aria-label="Language selection"
+    >
+      <button
+        type="button"
+        className={`language-button ${
+          language === "en"
+            ? "active"
+            : ""
+        }`}
+        onClick={() =>
+          setLanguage("en")
+        }
+      >
+        English
+      </button>
+
+      <span className="language-divider">
+        |
+      </span>
+
+      <button
+        type="button"
+        className={`language-button ${
+          language === "mr"
+            ? "active"
+            : ""
+        }`}
+        onClick={() =>
+          setLanguage("mr")
+        }
+      >
+        मराठी
+      </button>
+    </div>
+  );
+
+  /* =========================================
+     ROOM STATUS LABEL
+  ========================================== */
+
+  const getRoomStatusLabel = (
+    status: string
+  ) => {
+    switch (
+      String(status || "").toUpperCase()
+    ) {
+      case "AVAILABLE":
+        return tr(
+          "Available",
+          "उपलब्ध"
+        );
+
+      case "OCCUPIED":
+        return tr(
+          "Occupied",
+          "व्यापलेले"
+        );
+
+      case "BOOKED":
+        return tr(
+          "Booked",
+          "बुक केलेले"
+        );
+
+      case "RESERVED":
+        return tr(
+          "Reserved",
+          "आरक्षित"
+        );
+
+      case "NEEDS_CLEANING":
+        return tr(
+          "Needs Cleaning",
+          "साफसफाई आवश्यक"
+        );
+
+      case "CLEANING":
+      case "HOUSEKEEPING_CLEANING":
+        return tr(
+          "Cleaning",
+          "साफसफाई सुरू आहे"
+        );
+
+      case "OUT":
+      case "OUT_OF_SERVICE":
+        return tr(
+          "Out of Service",
+          "सेवेबाहेर"
+        );
+
+      default:
+        return status || tr(
+          "Not Available",
+          "उपलब्ध नाही"
+        );
+    }
+  };
+
+  /* =========================================
+     BED STATUS LABEL
+  ========================================== */
+
+  const getBedStatusLabel = (
+    status: string
+  ) => {
+    switch (
+      String(status || "").toUpperCase()
+    ) {
+      case "AVAILABLE":
+        return tr(
+          "Available",
+          "उपलब्ध"
+        );
+
+      case "OCCUPIED":
+        return tr(
+          "Occupied",
+          "व्यापलेले"
+        );
+
+      case "BOOKED":
+        return tr(
+          "Booked",
+          "बुक केलेले"
+        );
+
+      case "RESERVED":
+        return tr(
+          "Reserved",
+          "आरक्षित"
+        );
+
+      case "NEEDS_CLEANING":
+        return tr(
+          "Needs Cleaning",
+          "साफसफाई आवश्यक"
+        );
+
+      case "CLEANING":
+        return tr(
+          "Cleaning",
+          "साफसफाई सुरू आहे"
+        );
+
+      default:
+        return status;
+    }
+  };
 
   /* =========================================
      LOAD AUTHORITY ROOMS
-  ========================================= */
+  ========================================== */
 
   useEffect(() => {
+    let cancelled = false;
 
-    const loadRooms =
-      async () => {
+    const loadRooms = async () => {
+      try {
+        setLoadingRooms(true);
+        setError("");
 
-        try {
-
-          setLoadingRooms(true);
-
-          setError("");
-
-
-          const response =
-            await fetch(
-              `http://localhost:5000/api/rooms/authority-rooms?role=${encodeURIComponent(
-                role
-              )}`
-            );
-
-
-          const data =
-            await response.json();
-
-
-          if (
-            !response.ok ||
-            !data.success
-          ) {
-
-            throw new Error(
-              data.message ||
-              "Unable to load authority rooms."
-            );
-
-          }
-
-
-          /*
-           * IMPORTANT:
-           *
-           * Sort rooms numerically before
-           * storing them in state.
-           *
-           * Therefore:
-           *
-           * AC 1
-           * AC 2
-           * AC 3
-           * AC 4
-           * AC 5
-           * AC 11
-           * AC 12
-           * ...
-           */
-
-          const loadedRooms =
-            Array.isArray(
-              data.rooms
-            )
-              ? data.rooms
-              : [];
-
-
-          const sortedRooms =
-            sortRoomsChronologically(
-              loadedRooms
-            );
-
-
-          setRooms(
-            sortedRooms
+        const response =
+          await apiFetch(
+            `http://localhost:5000/api/rooms/authority-rooms?role=${encodeURIComponent(
+              role
+            )}`
           );
 
+        const data =
+          await response.json();
 
-        } catch (err) {
+        if (
+          !response.ok ||
+          !data.success
+        ) {
+          throw new Error(
+            data.message ||
+              tr(
+                "Unable to load authority rooms.",
+                "अधिकृत खोल्या लोड करता आल्या नाहीत."
+              )
+          );
+        }
 
-          console.error(
-            "Authority rooms error:",
-            err
+        const loadedRooms =
+          Array.isArray(data.rooms)
+            ? data.rooms
+            : [];
+
+        const sortedRooms =
+          sortRoomsChronologically(
+            loadedRooms
           );
 
+        if (!cancelled) {
+          setRooms(sortedRooms);
+        }
+      } catch (err) {
+        console.error(
+          "Authority rooms error:",
+          err
+        );
 
+        if (!cancelled) {
           setError(
             err instanceof Error
               ? err.message
-              : "Unable to load authority rooms."
+              : tr(
+                  "Unable to load authority rooms.",
+                  "अधिकृत खोल्या लोड करता आल्या नाहीत."
+                )
           );
-
-
-        } finally {
-
-          setLoadingRooms(false);
-
         }
-
-      };
-
+      } finally {
+        if (!cancelled) {
+          setLoadingRooms(false);
+        }
+      }
+    };
 
     loadRooms();
 
+    return () => {
+      cancelled = true;
+    };
   }, [role]);
-
 
   /* =========================================
      LOAD BEDS
-  ========================================= */
+  ========================================== */
 
   const loadBeds = async (
     room: AuthorityRoom
   ) => {
-
     try {
-
       setLoadingBeds(true);
-
       setError("");
 
-
       const response =
-        await fetch(
+        await apiFetch(
           `http://localhost:5000/api/rooms/${room.id}/beds`
         );
 
-
       const data =
         await response.json();
-
 
       if (
         !response.ok ||
         !data.success
       ) {
-
         throw new Error(
           data.message ||
-          "Unable to load room beds."
+            tr(
+              "Unable to load room beds.",
+              "खोलीचे बेड लोड करता आले नाहीत."
+            )
         );
-
       }
 
-
-      /*
-       * Beds are also sorted numerically.
-       *
-       * BED 1
-       * BED 2
-       * BED 3
-       * ...
-       */
-
       const loadedBeds =
-        Array.isArray(
-          data.beds
-        )
+        Array.isArray(data.beds)
           ? data.beds
           : [];
 
-
-      const sortedBeds =
-        [
-          ...loadedBeds,
-        ].sort(
-          (
-            first,
-            second
-          ) =>
-            first.bed_number -
-            second.bed_number
-        );
-
-
-      setBeds(
-        sortedBeds
+      const sortedBeds = [
+        ...loadedBeds,
+      ].sort(
+        (
+          first: RoomBed,
+          second: RoomBed
+        ) =>
+          first.bed_number -
+          second.bed_number
       );
 
-
+      setBeds(sortedBeds);
     } catch (err) {
-
       console.error(
         "Room beds error:",
         err
       );
 
-
       setError(
         err instanceof Error
           ? err.message
-          : "Unable to load room beds."
+          : tr(
+              "Unable to load room beds.",
+              "खोलीचे बेड लोड करता आले नाहीत."
+            )
       );
-
-
     } finally {
-
       setLoadingBeds(false);
-
     }
-
   };
-
 
   /* =========================================
      ROOM SELECTION
-  ========================================= */
+  ========================================== */
 
-  /* =========================================
-   ROOM SELECTION
-========================================= */
+  const handleRoomSelect = async (
+    room: AuthorityRoom
+  ) => {
+    setSelectedRoom(room);
+    setSelectedBed(null);
+    setBeds([]);
+    setError("");
 
-const handleRoomSelect = async (
-  room: AuthorityRoom
-) => {
-
-  setSelectedRoom(room);
-
-  setSelectedBed(null);
-
-  setBeds([]);
-
-  setError("");
-
-  /*
-   * ALL AUTHORITY ROOMS
-   *
-   * Exact bed selection is required.
-   *
-   * This includes:
-   *
-   * AC
-   * VIP
-   * NAC
-   * DM
-   * HALL
-   *
-   * The allotment backend requires a
-   * specific bed_id, so every room must
-   * load its beds before allotment.
-   */
-
-  await loadBeds(room);
-
-};
-
+    /*
+     * Load beds for information and
+     * availability validation.
+     *
+     * IMPORTANT:
+     *
+     * AC / VIP / NAC:
+     * complete room selection.
+     *
+     * DM / HALL:
+     * exact bed selection.
+     */
+    await loadBeds(room);
+  };
 
   /* =========================================
      SELECT BED
-  ========================================= */
+  ========================================== */
 
   const handleBedSelect = (
     bed: RoomBed
   ) => {
-
     if (
-      bed.bed_status !==
+      String(
+        bed.bed_status
+      ).toUpperCase() !==
       "AVAILABLE"
     ) {
-
       return;
-
     }
 
-
-    setSelectedBed(
-      bed
-    );
-
+    setSelectedBed(bed);
+    setError("");
   };
-
 
   /* =========================================
      AVAILABLE BED COUNT
-  ========================================= */
+  ========================================== */
 
   const getAvailableBedCount = () => {
-
     return beds.filter(
       (bed) =>
-        bed.bed_status ===
+        String(
+          bed.bed_status
+        ).toUpperCase() ===
         "AVAILABLE"
     ).length;
-
   };
-
 
   /* =========================================
      CHANGE ROOM
-  ========================================= */
+  ========================================== */
 
   const handleChangeRoom = () => {
-
     setSelectedRoom(null);
-
     setSelectedBed(null);
-
     setBeds([]);
-
     setError("");
-
   };
-
 
   /* =========================================
      CONTINUE NORMAL ROOM
-     
-     Sends the selected room to App.tsx.
-  ========================================= */
+
+     AC / VIP / NAC
+     = ROOM ONLY
+  ========================================== */
 
   const handleNormalRoomContinue = () => {
-
-    if (
-      !selectedRoom
-    ) {
-
-      alert(
-        "Please select a room."
+    if (!selectedRoom) {
+      setError(
+        tr(
+          "Please select a room.",
+          "कृपया खोली निवडा."
+        )
       );
 
       return;
-
     }
 
+    const availableBeds =
+      beds.filter(
+        (bed) =>
+          String(
+            bed.bed_status
+          ).toUpperCase() ===
+          "AVAILABLE"
+      );
+
+    if (
+      availableBeds.length ===
+      0
+    ) {
+      setError(
+        tr(
+          `${selectedRoom.room_number} has no available beds and cannot be allotted.`,
+          `${selectedRoom.room_number} मध्ये कोणतेही उपलब्ध बेड नाहीत आणि खोली देता येणार नाही.`
+        )
+      );
+
+      return;
+    }
 
     onContinue({
-
       roomId:
         selectedRoom.id,
 
@@ -739,49 +766,40 @@ const handleRoomSelect = async (
 
       isMatrixRoom:
         false,
-
     });
-
   };
-
 
   /* =========================================
      CONTINUE MATRIX ROOM
-     
-     Sends selected room + exact bed
-     to App.tsx.
-  ========================================= */
+
+     DM / HALL
+     = EXACT BED
+  ========================================== */
 
   const handleMatrixRoomContinue = () => {
-
-    if (
-      !selectedRoom
-    ) {
-
-      alert(
-        "Please select a room."
+    if (!selectedRoom) {
+      setError(
+        tr(
+          "Please select a room.",
+          "कृपया खोली निवडा."
+        )
       );
 
       return;
-
     }
 
-
-    if (
-      !selectedBed
-    ) {
-
-      alert(
-        "Please select an available bed."
+    if (!selectedBed) {
+      setError(
+        tr(
+          "Please select an available bed.",
+          "कृपया उपलब्ध बेड निवडा."
+        )
       );
 
       return;
-
     }
-
 
     onContinue({
-
       roomId:
         selectedRoom.id,
 
@@ -802,345 +820,324 @@ const handleRoomSelect = async (
 
       isMatrixRoom:
         true,
-
     });
-
   };
-
 
   /* =========================================
      LOADING
-  ========================================= */
+  ========================================== */
 
-  if (
-    loadingRooms
-  ) {
-
+  if (loadingRooms) {
     return (
-
       <main className="dashboard-screen">
+        <header className="dashboard-header">
+          <div className="dashboard-brand">
+            <div className="dashboard-logo">
+              ESM
+            </div>
+
+            <div>
+              <h1>
+                ESM REST HOUSE
+              </h1>
+
+              <p>
+                {tr(
+                  "Booking & Management System",
+                  "बुकिंग आणि व्यवस्थापन प्रणाली"
+                )}
+              </p>
+            </div>
+          </div>
+
+          {languageSwitcher}
+        </header>
 
         <section className="dashboard-content">
-
           <div className="dashboard-panel">
-
             <h2>
-              Other Authority Rooms
+              {tr(
+                "Other Authority Rooms",
+                "इतर अधिकृत खोल्या"
+              )}
             </h2>
 
             <p>
-              Loading authority rooms...
+              {tr(
+                "Loading authority rooms...",
+                "अधिकृत खोल्या लोड होत आहेत..."
+              )}
             </p>
-
           </div>
-
         </section>
-
       </main>
-
     );
-
   }
-
 
   /* =========================================
      PAGE
-  ========================================= */
+  ========================================== */
 
   return (
-
     <main className="dashboard-screen">
-
-
       {/* =====================================
           HEADER
       ====================================== */}
 
       <header className="dashboard-header">
-
         <div className="dashboard-brand">
-
           <div className="dashboard-logo">
             ESM
           </div>
 
           <div>
-
             <h1>
               ESM REST HOUSE
             </h1>
 
             <p>
-              Booking &amp; Management System
+              {tr(
+                "Booking & Management System",
+                "बुकिंग आणि व्यवस्थापन प्रणाली"
+              )}
             </p>
-
           </div>
-
         </div>
 
-
         <div className="dashboard-user">
+          {languageSwitcher}
 
           <div className="user-info">
-
             <strong>
-              Receptionist
+              {tr(
+                "Receptionist",
+                "रिसेप्शनिस्ट"
+              )}
             </strong>
 
             <span>
-              OTHER AUTHORITY ROOMS
+              {tr(
+                "OTHER AUTHORITY ROOMS",
+                "इतर अधिकृत खोल्या"
+              )}
             </span>
-
           </div>
-
 
           <button
             type="button"
             className="logout-button"
-            onClick={
-              onBack
-            }
+            onClick={onBack}
           >
-
-            BACK
-
+            {tr(
+              "BACK",
+              "मागे"
+            )}
           </button>
-
         </div>
-
       </header>
-
 
       {/* =====================================
           CONTENT
       ====================================== */}
 
       <section className="dashboard-content">
-
-
         {/* ===================================
             PAGE TITLE
         ==================================== */}
 
         <div className="dashboard-title">
-
           <div>
-
             <h2>
-              Other Authority Rooms
+              {tr(
+                "Other Authority Rooms",
+                "इतर अधिकृत खोल्या"
+              )}
             </h2>
 
             <p>
-              Explicit Booking / Allotment
+              {tr(
+                "Explicit Booking / Allotment",
+                "विशेष बुकिंग / वाटप"
+              )}
             </p>
-
           </div>
 
-
-          <span className="dashboard-date">
-
-            {new Date().toLocaleDateString(
-              "en-IN",
-              {
-                day:
-                  "2-digit",
-
-                month:
-                  "long",
-
-                year:
-                  "numeric",
-              }
-            )}
-
-          </span>
-
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "14px",
+            }}
+          >
+            <span className="dashboard-date">
+              {new Date().toLocaleDateString(
+                isMarathi
+                  ? "mr-IN"
+                  : "en-IN",
+                {
+                  day: "2-digit",
+                  month: "long",
+                  year: "numeric",
+                }
+              )}
+            </span>
+          </div>
         </div>
-
 
         {/* ===================================
             INFORMATION
         ==================================== */}
 
         <div className="dashboard-panel">
-
           <h3>
-            Authority Room Allotment
+            {tr(
+              "Authority Room Allotment",
+              "अधिकृत खोली वाटप"
+            )}
           </h3>
 
           <p>
-
-            These rooms are controlled by
-            other authorities. The Receptionist
-            may explicitly allot available
-            accommodation, but approval remains
-            with the responsible authority.
-
+            {tr(
+              "These rooms are controlled by other authorities. The Receptionist may explicitly allot available accommodation, but approval remains with the responsible authority.",
+              "या खोल्या इतर अधिकाऱ्यांच्या नियंत्रणाखाली आहेत. रिसेप्शनिस्ट उपलब्ध निवासाचे विशेष वाटप करू शकतो, परंतु मंजुरी संबंधित जबाबदार अधिकाऱ्याकडेच राहते."
+            )}
           </p>
-
         </div>
-
 
         {/* ===================================
             ERROR
         ==================================== */}
 
         {error && (
-
           <div className="dashboard-panel">
-
             <p className="restricted-message">
-
               {error}
-
             </p>
-
           </div>
-
         )}
-
 
         {/* ===================================
             ROOM LIST
         ==================================== */}
 
         {!selectedRoom && (
-
           <div className="dashboard-panel">
-
             <h3>
-              Select Authority Room
+              {tr(
+                "Select Authority Room",
+                "अधिकृत खोली निवडा"
+              )}
             </h3>
 
-
             {rooms.length === 0 ? (
-
               <p className="restricted-message">
-
-                No other authority rooms are
-                currently available for explicit
-                allotment.
-
-              </p>
-
-            ) : (
-
-              <div className="dashboard-cards">
-
-                {rooms.map(
-                  (
-                    room
-                  ) => {
-
-                    const matrixRoom =
-                      isMatrixRoom(
-                        room
-                      );
-
-
-                    return (
-
-                      <button
-                        key={
-                          room.id
-                        }
-                        type="button"
-                        className="stat-card"
-                        onClick={() =>
-                          handleRoomSelect(
-                            room
-                          )
-                        }
-                      >
-
-                        <span>
-
-                          {room.category_name}
-
-                        </span>
-
-
-                        <strong>
-
-                          {room.room_number}
-
-                        </strong>
-
-
-                        <span>
-
-                          {room.total_beds}
-                          {" "}
-                          beds
-
-                        </span>
-
-
-                        <span>
-
-                          Authority:{" "}
-
-                          {getAuthorityDisplayName(
-                            room.authority_role
-                          )}
-
-                        </span>
-
-
-                        <span>
-
-                          {matrixRoom
-                            ? "Exact bed selection"
-                            : "Room selection"}
-
-                        </span>
-
-                      </button>
-
-                    );
-
-                  }
+                {tr(
+                  "No other authority rooms are currently available for explicit allotment.",
+                  "सध्या विशेष वाटपासाठी इतर कोणत्याही अधिकृत खोल्या उपलब्ध नाहीत."
                 )}
+              </p>
+            ) : (
+              <div className="dashboard-cards">
+                {rooms.map((room) => {
+                  const matrixRoom =
+                    isMatrixRoom(room);
 
+                  const roomType =
+                    getRoomType(room);
+
+                  return (
+                    <button
+                      key={room.id}
+                      type="button"
+                      className="stat-card"
+                      onClick={() =>
+                        handleRoomSelect(
+                          room
+                        )
+                      }
+                      style={{
+                        cursor:
+                          "pointer",
+                        textAlign:
+                          "left",
+                      }}
+                    >
+                      <span>
+                        {roomType}
+                      </span>
+
+                      <strong>
+                        {room.room_number}
+                      </strong>
+
+                      <span>
+                        {room.total_beds}{" "}
+                        {tr(
+                          "beds",
+                          "बेड"
+                        )}
+                      </span>
+
+                      <span>
+                        {tr(
+                          "Authority:",
+                          "अधिकारी:"
+                        )}{" "}
+                        {getAuthorityDisplayName(
+                          room.authority_role
+                        )}
+                      </span>
+
+                      <span>
+                        {getRoomStatusLabel(
+                          room.room_status
+                        )}
+                      </span>
+
+                      <span>
+                        {matrixRoom
+                          ? tr(
+                              "Exact bed selection",
+                              "अचूक बेड निवड"
+                            )
+                          : tr(
+                              "Complete room selection",
+                              "संपूर्ण खोली निवड"
+                            )}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
-
             )}
-
           </div>
-
         )}
-
 
         {/* ===================================
             SELECTED NORMAL ROOM
+
+            AC / VIP / NAC
         ==================================== */}
 
         {selectedRoom &&
           !isMatrixRoom(
             selectedRoom
           ) && (
-
             <div className="dashboard-panel">
-
-
               <div className="panel-heading">
-
                 <div>
-
                   <h3>
-
-                    {selectedRoom.room_number}
-
+                    {
+                      selectedRoom.room_number
+                    }
                   </h3>
 
                   <p>
-
-                    {selectedRoom.category_name}
-
+                    {
+                      selectedRoom.category_name
+                    }
                   </p>
-
                 </div>
-
 
                 <button
                   type="button"
@@ -1148,129 +1145,135 @@ const handleRoomSelect = async (
                     handleChangeRoom
                   }
                 >
-
-                  Change Room
-
+                  {tr(
+                    "Change Room",
+                    "खोली बदला"
+                  )}
                 </button>
-
               </div>
-
 
               <div className="dashboard-cards">
-
                 <div className="stat-card">
-
                   <span>
-                    Room
+                    {tr(
+                      "Room",
+                      "खोली"
+                    )}
                   </span>
 
                   <strong>
-
-                    {selectedRoom.room_number}
-
+                    {
+                      selectedRoom.room_number
+                    }
                   </strong>
-
                 </div>
 
-
                 <div className="stat-card">
-
                   <span>
-                    Total Beds
+                    {tr(
+                      "Total Beds",
+                      "एकूण बेड"
+                    )}
                   </span>
 
                   <strong>
-
-                    {selectedRoom.total_beds}
-
+                    {
+                      selectedRoom.total_beds
+                    }
                   </strong>
-
                 </div>
 
-
                 <div className="stat-card">
-
                   <span>
-                    Authority
+                    {tr(
+                      "Available Beds",
+                      "उपलब्ध बेड"
+                    )}
                   </span>
 
                   <strong>
+                    {
+                      getAvailableBedCount()
+                    }
+                  </strong>
+                </div>
 
+                <div className="stat-card">
+                  <span>
+                    {tr(
+                      "Authority",
+                      "अधिकारी"
+                    )}
+                  </span>
+
+                  <strong>
                     {getAuthorityDisplayName(
                       selectedRoom.authority_role
                     )}
-
                   </strong>
-
                 </div>
-
               </div>
 
+              {/* APPROVAL */}
 
               <div className="dashboard-panel">
-
                 <h3>
-                  Approval Authority
+                  {tr(
+                    "Approval Authority",
+                    "मंजुरी अधिकारी"
+                  )}
                 </h3>
 
                 <p>
-
-                  This booking requires approval
-                  from:
+                  {tr(
+                    "This booking requires approval from:",
+                    "या बुकिंगसाठी मंजुरी आवश्यक आहे:"
+                  )}
 
                   <strong>
-
                     {" "}
-
                     {getAuthorityDisplayName(
                       selectedRoom.authority_role
                     )}
-
                   </strong>
-
                 </p>
-
 
                 <p>
-
-                  The Receptionist can allot the
-                  room, but approval does not
-                  transfer to the Receptionist.
-
+                  {tr(
+                    "The Receptionist can allot the room, but approval does not transfer to the Receptionist.",
+                    "रिसेप्शनिस्ट खोलीचे वाटप करू शकतो, परंतु मंजुरीचा अधिकार रिसेप्शनिस्टकडे हस्तांतरित होत नाही."
+                  )}
                 </p>
-
               </div>
 
+              {/* ROOM SELECTION */}
 
               <div className="dashboard-panel">
-
                 <h3>
-                  Room Selected
+                  {tr(
+                    "Room Selected",
+                    "खोली निवडली"
+                  )}
                 </h3>
 
-
                 <p>
-
                   <strong>
-                    {selectedRoom.room_number}
-                  </strong>
-
-                  {" "}
-                  has been selected.
-
+                    {
+                      selectedRoom.room_number
+                    }
+                  </strong>{" "}
+                  {tr(
+                    "has been selected.",
+                    "निवडली आहे."
+                  )}
                 </p>
-
 
                 <p>
-
-                  Bed selection is not required
-                  for this room. The system will
-                  handle available beds internally
-                  according to the number of guests
-                  in the booking.
-
+                  {tr(
+                    "Individual bed selection is not required for AC / VIP / NAC rooms. The system will handle the required available bed allocation internally.",
+                    "AC / VIP / NAC खोल्यांसाठी स्वतंत्र बेड निवड आवश्यक नाही. आवश्यक उपलब्ध बेडचे वाटप प्रणाली अंतर्गत करेल."
+                  )}
                 </p>
-
 
                 <button
                   type="button"
@@ -1280,28 +1283,22 @@ const handleRoomSelect = async (
                   style={{
                     marginTop:
                       "20px",
-
                     minHeight:
                       "48px",
-
                     padding:
                       "0 24px",
-
                     fontWeight:
                       700,
                   }}
                 >
-
-                  CONTINUE TO EXPLICIT BOOKING →
-
+                  {tr(
+                    "CONTINUE TO EXPLICIT BOOKING →",
+                    "विशेष बुकिंगकडे पुढे जा →"
+                  )}
                 </button>
-
               </div>
-
             </div>
-
           )}
-
 
         {/* ===================================
             SELECTED DM / HALL
@@ -1311,28 +1308,21 @@ const handleRoomSelect = async (
           isMatrixRoom(
             selectedRoom
           ) && (
-
             <div className="dashboard-panel">
-
-
               <div className="panel-heading">
-
                 <div>
-
                   <h3>
-
-                    {selectedRoom.room_number}
-
+                    {
+                      selectedRoom.room_number
+                    }
                   </h3>
 
                   <p>
-
-                    {selectedRoom.category_name}
-
+                    {
+                      selectedRoom.category_name
+                    }
                   </p>
-
                 </div>
-
 
                 <button
                   type="button"
@@ -1340,129 +1330,125 @@ const handleRoomSelect = async (
                     handleChangeRoom
                   }
                 >
-
-                  Change Room
-
+                  {tr(
+                    "Change Room",
+                    "खोली बदला"
+                  )}
                 </button>
-
               </div>
 
+              {/* APPROVAL */}
 
               <div className="dashboard-panel">
-
                 <h3>
-                  Approval Authority
+                  {tr(
+                    "Approval Authority",
+                    "मंजुरी अधिकारी"
+                  )}
                 </h3>
 
                 <p>
-
-                  This booking requires approval
-                  from:
+                  {tr(
+                    "This booking requires approval from:",
+                    "या बुकिंगसाठी मंजुरी आवश्यक आहे:"
+                  )}
 
                   <strong>
-
                     {" "}
-
                     {getAuthorityDisplayName(
                       selectedRoom.authority_role
                     )}
-
                   </strong>
-
                 </p>
-
 
                 <p>
-
-                  The Receptionist can allot the
-                  selected bed, but approval remains
-                  with the responsible authority.
-
+                  {tr(
+                    "The Receptionist can allot the selected bed, but approval remains with the responsible authority.",
+                    "रिसेप्शनिस्ट निवडलेल्या बेडचे वाटप करू शकतो, परंतु मंजुरी संबंधित जबाबदार अधिकाऱ्याकडेच राहते."
+                  )}
                 </p>
-
               </div>
 
-
               {loadingBeds ? (
-
                 <div className="dashboard-panel">
-
                   <p>
-                    Loading beds...
+                    {tr(
+                      "Loading beds...",
+                      "बेड लोड होत आहेत..."
+                    )}
                   </p>
-
                 </div>
-
               ) : (
-
                 <>
-
                   <div className="dashboard-cards">
-
                     <div className="stat-card">
-
                       <span>
-                        Total Beds
+                        {tr(
+                          "Total Beds",
+                          "एकूण बेड"
+                        )}
                       </span>
 
                       <strong>
-
                         {beds.length}
-
                       </strong>
-
                     </div>
 
-
                     <div className="stat-card">
-
                       <span>
-                        Available Beds
+                        {tr(
+                          "Available Beds",
+                          "उपलब्ध बेड"
+                        )}
                       </span>
 
                       <strong>
-
-                        {getAvailableBedCount()}
-
+                        {
+                          getAvailableBedCount()
+                        }
                       </strong>
-
                     </div>
 
-
                     <div className="stat-card">
-
                       <span>
-                        Selected Bed
+                        {tr(
+                          "Selected Bed",
+                          "निवडलेला बेड"
+                        )}
                       </span>
 
                       <strong>
-
                         {selectedBed
-                          ? `BED ${selectedBed.bed_number}`
-                          : "NONE"}
-
+                          ? `${tr(
+                              "BED",
+                              "बेड"
+                            )} ${
+                              selectedBed.bed_number
+                            }`
+                          : tr(
+                              "NONE",
+                              "नाही"
+                            )}
                       </strong>
-
                     </div>
-
                   </div>
 
-
-                  {/* REDBUS STYLE MATRIX */}
+                  {/* BED MATRIX */}
 
                   <div className="dashboard-panel">
-
                     <h3>
-                      Select Exact Bed
+                      {tr(
+                        "Select Exact Bed",
+                        "अचूक बेड निवडा"
+                      )}
                     </h3>
 
                     <p>
-
-                      Select the exact available
-                      bed number.
-
+                      {tr(
+                        "Select the exact available bed number.",
+                        "उपलब्ध असलेला अचूक बेड क्रमांक निवडा."
+                      )}
                     </p>
-
 
                     <div
                       className="bed-grid"
@@ -1471,24 +1457,19 @@ const handleRoomSelect = async (
                           "20px",
                       }}
                     >
-
                       {beds.map(
-                        (
-                          bed
-                        ) => {
-
+                        (bed) => {
                           const available =
-                            bed.bed_status ===
+                            String(
+                              bed.bed_status
+                            ).toUpperCase() ===
                             "AVAILABLE";
-
 
                           const selected =
                             selectedBed?.id ===
                             bed.id;
 
-
                           return (
-
                             <button
                               key={
                                 bed.id
@@ -1502,100 +1483,89 @@ const handleRoomSelect = async (
                                   bed
                                 )
                               }
-                              className={`
-                                bed-card
-                                ${
-                                  available
-                                    ? "available"
-                                    : "occupied"
-                                }
-                                ${
-                                  selected
-                                    ? "selected"
-                                    : ""
-                                }
-                              `}
+                              className={`bed-card ${
+                                available
+                                  ? "available"
+                                  : "occupied"
+                              } ${
+                                selected
+                                  ? "selected"
+                                  : ""
+                              }`}
                             >
-
                               <span className="bed-number">
-
-                                BED{" "}
-                                {bed.bed_number}
-
+                                {tr(
+                                  "BED",
+                                  "बेड"
+                                )}{" "}
+                                {
+                                  bed.bed_number
+                                }
                               </span>
-
 
                               <span className="bed-status">
-
                                 {selected
-                                  ? "SELECTED"
-                                  : bed.bed_status}
-
+                                  ? tr(
+                                      "SELECTED",
+                                      "निवडलेले"
+                                    )
+                                  : getBedStatusLabel(
+                                      bed.bed_status
+                                    )}
                               </span>
-
                             </button>
-
                           );
-
                         }
                       )}
-
                     </div>
-
                   </div>
-
 
                   {/* SELECTION SUMMARY */}
 
                   {selectedBed && (
-
                     <div className="dashboard-panel">
-
                       <h3>
-                        Selection Summary
+                        {tr(
+                          "Selection Summary",
+                          "निवड सारांश"
+                        )}
                       </h3>
 
-
                       <p>
-
                         <strong>
-                          Room:
-                        </strong>
-
-                        {" "}
-
-                        {selectedRoom.room_number}
-
+                          {tr(
+                            "Room:",
+                            "खोली:"
+                          )}
+                        </strong>{" "}
+                        {
+                          selectedRoom.room_number
+                        }
                       </p>
 
-
                       <p>
-
                         <strong>
-                          Bed:
-                        </strong>
-
-                        {" "}
-
-                        {selectedBed.bed_number}
-
+                          {tr(
+                            "Bed:",
+                            "बेड:"
+                          )}
+                        </strong>{" "}
+                        {
+                          selectedBed.bed_number
+                        }
                       </p>
 
-
                       <p>
-
                         <strong>
-                          Approval Authority:
-                        </strong>
-
-                        {" "}
-
+                          {tr(
+                            "Approval Authority:",
+                            "मंजुरी अधिकारी:"
+                          )}
+                        </strong>{" "}
                         {getAuthorityDisplayName(
                           selectedRoom.authority_role
                         )}
-
                       </p>
-
 
                       <button
                         type="button"
@@ -1605,41 +1575,28 @@ const handleRoomSelect = async (
                         style={{
                           marginTop:
                             "20px",
-
                           minHeight:
                             "48px",
-
                           padding:
                             "0 24px",
-
                           fontWeight:
                             700,
                         }}
                       >
-
-                        CONTINUE TO EXPLICIT BOOKING →
-
+                        {tr(
+                          "CONTINUE TO EXPLICIT BOOKING →",
+                          "विशेष बुकिंगकडे पुढे जा →"
+                        )}
                       </button>
-
                     </div>
-
                   )}
-
                 </>
-
               )}
-
             </div>
-
           )}
-
       </section>
-
     </main>
-
   );
-
 }
-
 
 export default OtherAuthorityRooms;

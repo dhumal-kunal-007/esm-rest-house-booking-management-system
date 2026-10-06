@@ -1,9 +1,16 @@
 import {
+  useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
 import "./App.css";
+import {
+  apiFetch,
+  clearAuthToken,
+  getAuthToken,
+} from "./api";
 
 import AppModal from "./components/AppModal";
 
@@ -19,18 +26,90 @@ import type {
 
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
+import DailyReport from "./pages/DailyReport";
 import CreateUser from "./pages/CreateUser";
 import Availability from "./pages/Availability";
+import CustomizeRates from "./pages/CustomizeRates";
 import Booking from "./pages/Booking";
 import CheckIn from "./pages/CheckIn";
 import CheckOut from "./pages/CheckOut";
 import Housekeeping from "./pages/Housekeeping";
 import Approval from "./pages/Approval";
+import LostAndFound from "./pages/LostAndFound";
+
+import GuestType from "./pages/GuestType";
+import Rate from "./pages/Rate";
+import BookingConfirmation from "./pages/BookingConfirmation";
+import BookingApproval from "./pages/BookingApproval";
+import Payment from "./pages/Payment";
+import Invoice from "./pages/Invoice";
+import RoomLocked from "./pages/RoomLocked";
+import PreCheckOut from "./pages/PreCheckOut";
+import RefundCalculation from "./pages/RefundCalculation";
+import RefundMemo from "./pages/RefundMemo";
+import WhatsAppFeedback from "./pages/WhatsAppFeedback";
+
+import { LanguageProvider } from "./i18n/LanguageContext";
 
 import type {
   BookingDraft,
 } from "./pages/Booking";
 
+import type {
+  BedSelection,
+} from "./pages/Availability";
+
+import type {
+  GuestTypeValue,
+} from "./pages/GuestType";
+
+import type {
+  RateSelection,
+  RateResult,
+} from "./pages/Rate";
+
+import type {
+  BookingConfirmationData,
+  AcceptedAccommodation,
+} from "./pages/BookingConfirmation";
+
+import type {
+  ApprovalDecision,
+  ApprovalAccommodation,
+  BookingApprovalData,
+} from "./pages/BookingApproval";
+
+import type {
+  PaymentData,
+} from "./pages/Payment";
+
+import type {
+  InvoiceData,
+} from "./pages/Invoice";
+
+import type {
+  RoomLockedData,
+  LockedAccommodation,
+} from "./pages/RoomLocked";
+
+import type {
+  PreCheckOutData,
+  PreCheckOutAccommodation,
+} from "./pages/PreCheckOut";
+
+import type {
+  RefundCalculationData,
+  RefundCalculationAccommodation,
+} from "./pages/RefundCalculation";
+
+import type {
+  RefundMemoData,
+  RefundMemoAccommodation,
+} from "./pages/RefundMemo";
+
+import type {
+  WhatsAppFeedbackData,
+} from "./pages/WhatsAppFeedback";
 
 /* =========================================
    USER ROLES
@@ -44,7 +123,6 @@ export type UserRole =
   | "OLC_REST_HOUSE_MANAGER"
   | "RECEPTIONIST";
 
-
 /* =========================================
    ACCOMMODATION CATEGORY
 ========================================= */
@@ -54,7 +132,6 @@ export type AccommodationCategory =
   | "Non-AC"
   | "Dormitory"
   | "VIP";
-
 
 /* =========================================
    USER
@@ -68,35 +145,87 @@ export interface User {
   active: boolean;
 }
 
-
 /* =========================================
-   ALLOTMENT SELECTION
+   BOOKING WORKFLOW STAGE
 ========================================= */
 
-interface AllotmentSelection {
-  guestId: string;
-  roomId: string;
+type BookingStage =
+  | "BOOKING"
+  | "AVAILABILITY"
+  | "GUEST_TYPE"
+  | "RATE"
+  | "BOOKING_CONFIRMATION"
+  | "BOOKING_APPROVAL"
+  | "PAYMENT"
+  | "INVOICE"
+  | "ROOM_LOCKED"
+  | "CHECK_IN"
+  | "CHECK_OUT"
+  | "PRE_CHECK_OUT"
+  | "REFUND_CALCULATION"
+  | "REFUND_MEMO"
+  | "WHATSAPP_FEEDBACK";
 
-  /*
-   * AC / NAC / VIP:
-   * Whole-room selection, therefore bedId
-   * is intentionally empty/undefined.
-   *
-   * DM / HALL:
-   * Exact bed/seat selection, therefore
-   * bedId is required.
-   */
-  bedId?: string;
+/* =========================================
+   COMPLETE WORKFLOW STATE
+========================================= */
 
-  occupantName?: string;
+interface WorkflowState {
+  stage: BookingStage;
+
+  booking: BookingDraft | null;
+
+  acceptedAccommodation: AcceptedAccommodation[];
+
+  availabilitySelections: BedSelection[];
+
+  guestType: GuestTypeValue | null;
+
+  rateSelection: RateSelection | null;
+
+  rateResult: RateResult | null;
+
+  bookingConfirmation:
+    | BookingConfirmationData
+    | null;
+
+  approvalDecision:
+    | ApprovalDecision
+    | null;
+
+  approvalRemarks: string;
+
+  payment: PaymentData | null;
+
+  paymentId: string | null;
+
+  invoice: InvoiceData | null;
+
+  roomLocked: RoomLockedData | null;
+
+  preCheckOut: PreCheckOutData | null;
+
+  refundCalculation:
+    | RefundCalculationData
+    | null;
+
+  refundMemo:
+    | RefundMemoData
+    | null;
+
+  feedback:
+    | WhatsAppFeedbackData
+    | null;
 }
-
 
 /* =========================================
    APP
 ========================================= */
 
-function App() {
+function AppContent() {
+  const bookingProgressQueue = useRef<Promise<void>>(
+    Promise.resolve()
+  );
 
   /* =========================================
      SPLASH
@@ -107,7 +236,6 @@ function App() {
     setShowSplash,
   ] = useState(true);
 
-
   /* =========================================
      USERS
   ========================================= */
@@ -116,7 +244,6 @@ function App() {
     users,
     setUsers,
   ] = useState<User[]>([]);
-
 
   /* =========================================
      LOGGED IN USER
@@ -127,6 +254,51 @@ function App() {
     setLoggedInUser,
   ] = useState<User | null>(null);
 
+  const [
+    isRestoringSession,
+    setIsRestoringSession,
+  ] = useState(true);
+
+  useEffect(() => {
+    const restoreSession = async () => {
+      if (!getAuthToken()) {
+        setIsRestoringSession(false);
+        return;
+      }
+
+      try {
+        const response = await apiFetch(
+          "http://localhost:5000/api/auth/me"
+        );
+        const data = await response.json();
+
+        if (
+          !response.ok ||
+          !data?.success ||
+          !data?.user
+        ) {
+          throw new Error(
+            data?.message || "Your session is no longer valid."
+          );
+        }
+
+        setLoggedInUser({
+          id: data.user.id,
+          name: data.user.full_name,
+          username: data.user.username,
+          role: data.user.role_name as UserRole,
+          active: true,
+        });
+      } catch (error) {
+        clearAuthToken();
+        console.error("Session restore failed:", error);
+      } finally {
+        setIsRestoringSession(false);
+      }
+    };
+
+    void restoreSession();
+  }, []);
 
   /* =========================================
      CURRENT PAGE
@@ -137,26 +309,47 @@ function App() {
     setCurrentPage,
   ] = useState<
     | "dashboard"
+    | "daily-report"
     | "booking"
     | "availability"
+    | "customize-rates"
     | "create-user"
     | "otherAuthorityRooms"
     | "check-in"
     | "check-out"
     | "housekeeping"
     | "approvals"
+    | "lost-and-found"
+    | "workflow"
   >("dashboard");
 
-
   /* =========================================
-     BOOKING DRAFT
+     WORKFLOW STATE
   ========================================= */
 
   const [
-    bookingDraft,
-    setBookingDraft,
-  ] = useState<BookingDraft | null>(null);
-
+    workflow,
+    setWorkflow,
+  ] = useState<WorkflowState>({
+    stage: "BOOKING",
+    booking: null,
+    acceptedAccommodation: [],
+    availabilitySelections: [],
+    guestType: null,
+    rateSelection: null,
+    rateResult: null,
+    bookingConfirmation: null,
+    approvalDecision: null,
+    approvalRemarks: "",
+    payment: null,
+    paymentId: null,
+    invoice: null,
+    roomLocked: null,
+    preCheckOut: null,
+    refundCalculation: null,
+    refundMemo: null,
+    feedback: null,
+  });
 
   /* =========================================
      EXPLICIT AUTHORITY SELECTION
@@ -168,7 +361,6 @@ function App() {
   ] = useState<
     ExplicitAuthoritySelection | null
   >(null);
-
 
   /* =========================================
      PROFESSIONAL APP MODAL
@@ -184,13 +376,11 @@ function App() {
     onCloseAction?: () => void;
   } | null>(null);
 
-
   /* =========================================
      CLOSE MODAL
   ========================================= */
 
   const closeModal = () => {
-
     const action =
       modal?.onCloseAction;
 
@@ -201,49 +391,44 @@ function App() {
     }
   };
 
-
-    /* =========================================
-     LOAD USERS FROM POSTGRESQL
+  /* =========================================
+     LOAD USERS
   ========================================= */
 
   useEffect(() => {
 
     const loadUsers = async () => {
 
+      if (!loggedInUser) {
+        return;
+      }
+
       try {
 
         const response =
-          await fetch(
+          await apiFetch(
             "http://localhost:5000/api/users"
           );
-
 
         const data =
           await response.json();
 
-
         if (!response.ok) {
-
           throw new Error(
             data.message ||
             "Failed to load users."
           );
-
         }
-
 
         if (
           !Array.isArray(
             data.users
           )
         ) {
-
           throw new Error(
             "Invalid user data received from server."
           );
-
         }
-
 
         const databaseUsers:
           User[] =
@@ -255,109 +440,35 @@ function App() {
               role: string;
               active: boolean;
             }) => ({
-
-              id:
-                user.id,
-
-              name:
-                user.name,
-
-              username:
-                user.username,
-
+              id: user.id,
+              name: user.name,
+              username: user.username,
               role:
                 user.role as UserRole,
-
-              active:
-                user.active,
-
+              active: user.active,
             })
           );
-
 
         setUsers(
           databaseUsers
         );
 
-
       } catch (error) {
 
         console.error(
-          "Failed to load users from PostgreSQL:",
+          "Failed to load users:",
           error
         );
 
-
-        /*
-         * Fallback to localStorage only if
-         * PostgreSQL cannot be reached.
-         */
-        const savedUsers =
-          localStorage.getItem(
-            "esm-users"
-          );
-
-
-        if (!savedUsers) {
-
-          setUsers([]);
-
-          return;
-        }
-
-
-        try {
-
-          const parsedUsers =
-            JSON.parse(
-              savedUsers
-            );
-
-
-          if (
-            Array.isArray(
-              parsedUsers
-            )
-          ) {
-
-            setUsers(
-              parsedUsers
-            );
-
-          } else {
-
-            setUsers([]);
-
-          }
-
-        } catch {
-
-          setUsers([]);
-
-        }
+        setUsers([]);
 
       }
 
     };
 
-
     loadUsers();
 
-  }, []);
-
-  /* =========================================
-     SAVE LOCAL USERS
-  ========================================= */
-
-  useEffect(() => {
-
-    localStorage.setItem(
-      "esm-users",
-      JSON.stringify(users)
-    );
-
-  }, [users]);
-
+  }, [loggedInUser?.id]);
 
   /* =========================================
      SPLASH TIMER
@@ -367,19 +478,14 @@ function App() {
 
     const timer =
       setTimeout(() => {
-
         setShowSplash(false);
-
       }, 2600);
 
     return () => {
-
       clearTimeout(timer);
-
     };
 
   }, []);
-
 
   /* =========================================
      LOGIN
@@ -389,17 +495,13 @@ function App() {
     user: User
   ) => {
 
-    setLoggedInUser(
-      user
-    );
+    setLoggedInUser(user);
 
     setCurrentPage(
       "dashboard"
     );
 
-    setBookingDraft(
-      null
-    );
+    resetWorkflow();
 
     setExplicitAuthoritySelection(
       null
@@ -408,7 +510,6 @@ function App() {
     setModal(null);
 
   };
-
 
   /* =========================================
      LOGOUT
@@ -416,17 +517,15 @@ function App() {
 
   const handleLogout = () => {
 
-    setLoggedInUser(
-      null
-    );
+    clearAuthToken();
+
+    setLoggedInUser(null);
 
     setCurrentPage(
       "dashboard"
     );
 
-    setBookingDraft(
-      null
-    );
+    resetWorkflow();
 
     setExplicitAuthoritySelection(
       null
@@ -436,6 +535,34 @@ function App() {
 
   };
 
+  /* =========================================
+     RESET WORKFLOW
+  ========================================= */
+
+  const resetWorkflow = () => {
+
+    setWorkflow({
+      stage: "BOOKING",
+      booking: null,
+      acceptedAccommodation: [],
+      availabilitySelections: [],
+      guestType: null,
+      rateSelection: null,
+      rateResult: null,
+      bookingConfirmation: null,
+      approvalDecision: null,
+      approvalRemarks: "",
+      payment: null,
+      paymentId: null,
+      invoice: null,
+      roomLocked: null,
+      preCheckOut: null,
+      refundCalculation: null,
+      refundMemo: null,
+      feedback: null,
+    });
+
+  };
 
   /* =========================================
      CREATE USER
@@ -458,7 +585,6 @@ function App() {
 
   };
 
-
   /* =========================================
      DELETE / DEACTIVATE USER
   ========================================= */
@@ -470,21 +596,14 @@ function App() {
     if (!loggedInUser) {
 
       setModal({
-
-        type:
-          "error",
-
-        title:
-          "Session Expired",
-
+        type: "error",
+        title: "Session Expired",
         message:
           "Your user session is missing. Please login again.",
-
       });
 
       return;
     }
-
 
     if (
       loggedInUser.role !==
@@ -492,21 +611,14 @@ function App() {
     ) {
 
       setModal({
-
-        type:
-          "error",
-
-        title:
-          "Access Denied",
-
+        type: "error",
+        title: "Access Denied",
         message:
           "Only an ADMIN can delete or deactivate users.",
-
       });
 
       return;
     }
-
 
     if (
       loggedInUser.id ===
@@ -514,36 +626,26 @@ function App() {
     ) {
 
       setModal({
-
-        type:
-          "warning",
-
-        title:
-          "Action Not Allowed",
-
+        type: "warning",
+        title: "Action Not Allowed",
         message:
           "You cannot deactivate your own account.",
-
       });
 
       return;
     }
 
-
     try {
 
       const response =
-        await fetch(
+        await apiFetch(
           `http://localhost:5000/api/users/${userId}`,
           {
-            method:
-              "DELETE",
-
+            method: "DELETE",
             headers: {
               "Content-Type":
                 "application/json",
             },
-
             body:
               JSON.stringify({
                 adminUserId:
@@ -552,41 +654,23 @@ function App() {
           }
         );
 
-
       const data =
         await response.json();
 
-
       if (!response.ok) {
 
-        console.error(
-          "Delete user API error:",
-          data
-        );
-
         setModal({
-
-          type:
-            "error",
-
+          type: "error",
           title:
             "User Could Not Be Deleted",
-
           message:
             data.message ||
             "Unable to deactivate the selected user.",
-
         });
 
         return;
       }
 
-
-      /*
-       * Update the local user list immediately
-       * so the Admin portal shows the user
-       * as inactive.
-       */
       setUsers(
         (currentUsers) =>
           currentUsers.map(
@@ -594,55 +678,42 @@ function App() {
               user.id === userId
                 ? {
                     ...user,
-                    active:
-                      false,
+                    active: false,
                   }
                 : user
           )
       );
 
-
       setModal({
-
-        type:
-          "success",
-
+        type: "success",
         title:
           "User Deactivated",
-
         message:
           data.message ||
           "The user has been deactivated successfully.",
-
       });
 
     } catch (error) {
 
       console.error(
-        "Delete user connection error:",
+        "Delete user error:",
         error
       );
 
       setModal({
-
-        type:
-          "error",
-
+        type: "error",
         title:
           "Server Unavailable",
-
         message:
-          "Unable to connect to the user management server. Please make sure the backend is running.",
-
+          "Unable to connect to the user management server.",
       });
 
     }
 
   };
 
-
   /* =========================================
-     ROLE → ACCOMMODATION CATEGORY
+     ROLE → CATEGORY
   ========================================= */
 
   const getAccommodationCategory = (
@@ -655,11 +726,7 @@ function App() {
         return "VIP";
 
       case "SUPERINTENDENT":
-        return "AC";
-
       case "WELFARE_ORGANISER":
-        return "AC";
-
       case "OLC_REST_HOUSE_MANAGER":
         return "AC";
 
@@ -674,9 +741,8 @@ function App() {
 
   };
 
-
   /* =========================================
-     AUTHORITY ROOM CATEGORY
+     AUTHORITY CATEGORY
   ========================================= */
 
   const getAuthorityBookingCategory = (
@@ -686,16 +752,24 @@ function App() {
     switch (
       String(
         categoryName
-      ).toUpperCase()
+      )
+        .toUpperCase()
+        .replace(
+          /[\s-]+/g,
+          "_"
+        )
     ) {
 
       case "VIP":
+      case "AC_VIP":
         return "VIP";
 
       case "NON_AC":
+      case "NAC":
         return "Non-AC";
 
       case "DORMITORY":
+      case "DM":
         return "Dormitory";
 
       case "AC":
@@ -706,6 +780,88 @@ function App() {
 
   };
 
+  /* =========================================
+     RATE CATEGORY CONVERSION
+  ========================================= */
+
+  const getRateAccommodationCategory = (
+    category: AccommodationCategory
+  ):
+    | "AC"
+    | "NON_AC"
+    | "DORMITORY"
+    | "HALL"
+    | "VIP" => {
+
+    switch (category) {
+
+      case "Non-AC":
+        return "NON_AC";
+
+      case "Dormitory":
+        return "DORMITORY";
+
+      case "VIP":
+        return "VIP";
+
+      case "AC":
+      default:
+        return "AC";
+
+    }
+
+  };
+
+  /* =========================================
+     ACCEPTED ACCOMMODATION CATEGORY
+  ========================================= */
+
+  const getAcceptedAccommodationCategory = (
+    item: AcceptedAccommodation
+  ): string => {
+
+    const roomName =
+      String(
+        item.roomName || ""
+      ).toUpperCase();
+
+    if (
+      roomName.startsWith(
+        "AC VIP"
+      ) ||
+      roomName.startsWith(
+        "VIP"
+      )
+    ) {
+      return "VIP";
+    }
+
+    if (
+      roomName.startsWith(
+        "NAC"
+      )
+    ) {
+      return "NON_AC";
+    }
+
+    if (
+      roomName.startsWith(
+        "DM"
+      )
+    ) {
+      return "DORMITORY";
+    }
+
+    if (
+      roomName.startsWith(
+        "HALL"
+      )
+    ) {
+      return "HALL";
+    }
+
+    return "AC";
+  };
 
   /* =========================================
      NEW BOOKING
@@ -713,9 +869,7 @@ function App() {
 
   const handleNewBooking = () => {
 
-    setBookingDraft(
-      null
-    );
+    resetWorkflow();
 
     setExplicitAuthoritySelection(
       null
@@ -727,9 +881,8 @@ function App() {
 
   };
 
-
   /* =========================================
-     OTHER AUTHORITY ROOM SELECTED
+     AUTHORITY ROOM
   ========================================= */
 
   const handleExplicitAuthoritySelection = (
@@ -740,9 +893,7 @@ function App() {
       selection
     );
 
-    setBookingDraft(
-      null
-    );
+    resetWorkflow();
 
     setCurrentPage(
       "booking"
@@ -750,9 +901,8 @@ function App() {
 
   };
 
-
   /* =========================================
-     BOOKING FORM → DATABASE
+     BOOKING → DATABASE
   ========================================= */
 
   const handleBookingContinue = async (
@@ -762,35 +912,17 @@ function App() {
     if (!loggedInUser) {
 
       setModal({
-
         type: "error",
-
-        title:
-          "Session Expired",
-
+        title: "Session Expired",
         message:
-          "Your user session is missing. Please login again.",
-
+          "Please login again.",
       });
 
       return;
     }
 
     try {
-
-      const response =
-        await fetch(
-          "http://localhost:5000/api/bookings",
-          {
-            method: "POST",
-
-            headers: {
-              "Content-Type":
-                "application/json",
-            },
-
-            body:
-              JSON.stringify({
+      const bookingPayload = {
 
                 booking_type:
                   booking.bookingType,
@@ -815,15 +947,32 @@ function App() {
                 is_emergency:
                   false,
 
+                service_member: {
+                  service_number:
+                    booking.serviceman.number,
+                  rank:
+                    booking.serviceman.rank,
+                  full_name:
+                    booking.serviceman.name,
+                  mobile_number:
+                    booking.serviceman.mobile,
+                  address:
+                    booking.serviceman.address,
+                  aadhaar_number:
+                    booking.serviceman.aadhaar,
+                },
+
                 created_by:
                   loggedInUser.id,
 
                 guests:
                   booking.guests.map(
                     (guest) => ({
-
                       name:
                         guest.name,
+
+                      gender:
+                        guest.gender,
 
                       relationship:
                         guest.relationship,
@@ -831,103 +980,111 @@ function App() {
                       mobile:
                         guest.mobile,
 
-                      identityProofType:
-                        guest.identityProofType,
+                      address:
+                        guest.address,
 
-                      identityProofNumber:
-                        guest.identityProofNumber,
+                      aadhaar:
+                        guest.aadhaar,
 
                       relationshipProofType:
                         guest.relationshipProofType,
 
                       relationshipProofNumber:
                         guest.relationshipProofNumber,
-
                     })
                   ),
 
-              }),
-
-          }
+              };
+      const hasDocuments = Boolean(
+        booking.serviceman.document ||
+          booking.guests.some((guest) => guest.document)
+      );
+      const requestHeaders: HeadersInit = hasDocuments
+        ? {}
+        : { "Content-Type": "application/json" };
+      let requestBody: BodyInit;
+      if (hasDocuments) {
+        const formData = new FormData();
+        formData.append(
+          "booking_payload",
+          JSON.stringify(bookingPayload)
         );
+        if (booking.serviceman.document) {
+          formData.append(
+            "booking_person_document",
+            booking.serviceman.document
+          );
+        }
+        booking.guests.forEach((guest, index) => {
+          if (guest.document) {
+            formData.append(
+              `occupant_document_${index}`,
+              guest.document
+            );
+          }
+        });
+        requestBody = formData;
+      } else {
+        requestBody = JSON.stringify(bookingPayload);
+      }
 
+      const response = await apiFetch(
+        "http://localhost:5000/api/bookings",
+        {
+          method: "POST",
+          headers: requestHeaders,
+          body: requestBody,
+        }
+      );
 
       const data =
         await response.json();
 
-
       if (!response.ok) {
 
         setModal({
-
           type: "error",
-
           title:
             "Booking Could Not Be Created",
-
           message:
             data.message ||
-            "Unable to create the booking. Please check the details and try again.",
-
+            "Unable to create booking.",
         });
 
         return;
       }
-
 
       if (!data.booking?.id) {
 
-        console.error(
-          "Booking API returned no booking ID:",
-          data
-        );
-
         setModal({
-
           type: "error",
-
           title:
             "Booking ID Missing",
-
           message:
-            "The booking was created, but the database booking ID was not returned. Please contact the administrator before proceeding.",
-
+            "The booking ID was not returned by the server.",
         });
 
         return;
       }
-
 
       if (
         !Array.isArray(
           data.guests
-        ) ||
-        data.guests.length !==
-          booking.guests.length
+        )
       ) {
 
-        console.error(
-          "Guest API response mismatch:",
-          data
-        );
-
         setModal({
-
           type: "error",
-
           title:
             "Guest Information Error",
-
           message:
-            "The booking was created, but guest information could not be linked correctly. Please contact the administrator.",
-
+            "Guest information could not be linked correctly.",
         });
 
         return;
       }
 
-
-      const bookingWithDatabaseIds:
+      const bookingWithIds:
         BookingDraft = {
 
         ...booking,
@@ -937,42 +1094,41 @@ function App() {
 
         guests:
           booking.guests.map(
-            (guest, index) => ({
-
+            (
+              guest,
+              index
+            ) => ({
               ...guest,
-
               id:
                 data.guests[index]?.id,
-
             })
           ),
 
       };
 
-
-      setBookingDraft(
-        bookingWithDatabaseIds
+      setWorkflow(
+        (current) => ({
+          ...current,
+          stage:
+            "AVAILABILITY",
+          booking:
+            bookingWithIds,
+        })
       );
 
-
       setModal({
-
         type: "success",
-
         title:
-          "Booking Created Successfully",
-
+          "Booking Created",
         message:
-          `Booking Reference: ${data.booking.booking_reference}`,
-
+          `Booking Reference: ${
+            data.booking.booking_reference
+          }`,
         onCloseAction: () => {
-
           setCurrentPage(
-            "availability"
+            "workflow"
           );
-
         },
-
       });
 
     } catch (error) {
@@ -983,65 +1139,326 @@ function App() {
       );
 
       setModal({
-
         type: "error",
-
         title:
           "Booking Server Unavailable",
-
         message:
-          "Unable to connect to the booking server. Please make sure the backend is running and try again.",
-
+          "Unable to connect to the booking server.",
       });
 
     }
 
   };
 
-
   /* =========================================
-     CONFIRM ALLOTMENT
+     ACCEPTANCE
   ========================================= */
 
-  const handleConfirmAllotment = async (
-    selections: AllotmentSelection[]
+  const saveBookingProgress = async (
+    bookingId: string,
+    currentStep:
+      | "AVAILABILITY"
+      | "GUEST_TYPE"
+      | "RATE"
+      | "BOOKING_CONFIRMATION"
+      | "COMPLETED",
+    progressData: Record<string, unknown> = {}
   ) => {
+    const save = bookingProgressQueue.current.then(async () => {
+      const response = await apiFetch(
+        `http://localhost:5000/api/bookings/${bookingId}/progress`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            current_step: currentStep,
+            progress_data: progressData,
+          }),
+        }
+      );
+      const data = await response.json();
+      if (!response.ok || !data?.success) {
+        throw new Error(
+          data?.message || "Unable to save booking progress."
+        );
+      }
+    });
+    bookingProgressQueue.current = save.catch(() => undefined);
+    await save;
+  };
+
+  const handleAvailabilitySelectionsChange = useCallback(
+    async (selections: BedSelection[]) => {
+      const bookingId = workflow.booking?.id;
+      if (!bookingId) {
+        return;
+      }
+
+      setWorkflow((current) => ({
+        ...current,
+        availabilitySelections: selections,
+      }));
+      try {
+        await saveBookingProgress(bookingId, "AVAILABILITY", {
+          availability_selections: selections,
+        });
+      } catch (error) {
+        console.error("Booking draft selection save error:", error);
+        setModal({
+          type: "error",
+          title: "Booking Progress Could Not Be Saved",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Your accommodation selections could not be saved. Please retry before leaving this page.",
+        });
+      }
+    },
+    [workflow.booking?.id]
+  );
+
+  const handleResumeBooking = async (bookingId: string) => {
+    try {
+      const response = await apiFetch(
+        `http://localhost:5000/api/bookings/${bookingId}/resume`
+      );
+      const data = await response.json();
+      if (!response.ok || !data?.success || !data.booking) {
+        throw new Error(
+          data?.message || "Unable to resume this booking."
+        );
+      }
+
+      const savedBooking = data.booking;
+      const pricing = data.pricing;
+      const guests = (savedBooking.guests ?? []).map(
+        (guest: Record<string, unknown>) => ({
+          id: String(guest.id),
+          name: String(guest.guest_name ?? ""),
+          gender: String(guest.gender ?? ""),
+          relationship: String(guest.relationship ?? ""),
+          mobile: String(guest.mobile_number ?? ""),
+          relationshipProofType: String(
+            guest.relationship_proof_type ?? ""
+          ),
+          relationshipProofNumber: String(
+            guest.relationship_proof_number ?? ""
+          ),
+          aadhaar: "",
+          address: "",
+        })
+      );
+
+      const booking: BookingDraft = {
+        id: String(savedBooking.id),
+        category: (() => {
+          const category = String(
+            pricing?.accommodationCategory ??
+              data.accepted_accommodation?.[0]?.category_name ??
+              ""
+          )
+            .trim()
+            .toUpperCase()
+            .replace(/[\s-]+/g, "_");
+          if (category === "NON_AC") return "Non-AC";
+          if (category === "DORMITORY") return "Dormitory";
+          if (category === "VIP") return "VIP";
+          if (category === "AC") return "AC";
+          return getAccommodationCategory(loggedInUser?.role ?? "RECEPTIONIST");
+        })(),
+        bookingType: savedBooking.booking_type,
+        serviceman: {
+          number: String(
+            savedBooking.service_member?.service_number ?? ""
+          ),
+          rank: String(savedBooking.service_member?.rank ?? ""),
+          name: String(savedBooking.service_member?.full_name ?? ""),
+          mobile: "",
+          address: String(savedBooking.service_member?.address ?? ""),
+          aadhaar: "",
+        },
+        guests,
+        checkIn: String(savedBooking.check_in_date),
+        checkOut: String(savedBooking.check_out_date),
+      };
+
+      const acceptedAccommodation: AcceptedAccommodation[] =
+        (data.accepted_accommodation ?? []).map(
+          (accepted: Record<string, unknown>) => ({
+            roomId: String(accepted.room_id),
+            roomName: String(accepted.room_number),
+            ...(accepted.bed_id
+              ? {
+                  bedId: String(accepted.bed_id),
+                  bedNumber: Number(accepted.bed_number),
+                }
+              : {}),
+            guestId: String(accepted.guest_id),
+            guestName: String(accepted.guest_name),
+          })
+        );
+
+      const savedSelections =
+        Array.isArray(data.progress_data?.availability_selections)
+          ? data.progress_data.availability_selections
+          : [];
+      const selectionByGuest = new Map<string, BedSelection>();
+      for (const item of acceptedAccommodation) {
+        selectionByGuest.set(item.guestId, {
+          roomId: item.roomId,
+          roomName: item.roomName,
+          bedId: item.bedId ?? "",
+          bedNumber: item.bedNumber ?? 0,
+          occupantName: item.guestName,
+          guestId: item.guestId,
+        });
+      }
+      for (const item of savedSelections) {
+        if (
+          item &&
+          typeof item.roomId === "string" &&
+          typeof item.guestId === "string"
+        ) {
+          selectionByGuest.set(item.guestId, item as BedSelection);
+        }
+      }
+      const availabilitySelections = Array.from(
+        selectionByGuest.values()
+      );
+
+      const guestType =
+        pricing?.guestType ??
+        data.progress_data?.guest_type ??
+        null;
+      const rateSelection: RateSelection | null = pricing
+        ? {
+            guestType,
+            accommodationCategory:
+              pricing.accommodationCategory,
+            checkIn: booking.checkIn,
+            checkOut: booking.checkOut,
+            numberOfRooms: new Set(
+              acceptedAccommodation
+                .filter((item) => !item.bedId)
+                .map((item) => item.roomId)
+            ).size,
+            numberOfBeds: new Set(
+              acceptedAccommodation
+                .filter((item) => Boolean(item.bedId))
+                .map((item) => item.bedId)
+            ).size,
+            additionalRetiredMembers: Number(
+              pricing.additionalRetiredMembers ?? 0
+            ),
+            additionalOtherRelations: Number(
+              pricing.additionalOtherRelations ?? 0
+            ),
+          }
+        : null;
+      const rateResult: RateResult | null = pricing
+        ? {
+            accommodationRate: Number(pricing.accommodationRate),
+            accommodationDays: Number(pricing.accommodationDays),
+            accommodationAmount: Number(pricing.accommodationAmount),
+            additionalRetiredAmount: Number(
+              pricing.additionalRetiredAmount
+            ),
+            additionalOtherRelationAmount: Number(
+              pricing.additionalOtherRelationAmount
+            ),
+            additionalMemberAmount: Number(
+              pricing.additionalMemberAmount
+            ),
+            totalAmount: Number(pricing.totalAmount),
+          }
+        : null;
+      const bookingConfirmation: BookingConfirmationData | null =
+        rateSelection && rateResult && guestType
+          ? {
+              bookingType: booking.bookingType,
+              category: rateSelection.accommodationCategory,
+              serviceman: booking.serviceman,
+              guests,
+              checkIn: booking.checkIn,
+              checkOut: booking.checkOut,
+              acceptedAccommodation,
+              guestType,
+              rateSelection,
+              rateResult,
+            }
+          : null;
+
+      const stage = data.current_step as BookingStage;
+      setExplicitAuthoritySelection(null);
+      setWorkflow((current) => ({
+        ...current,
+        stage,
+        booking,
+        acceptedAccommodation,
+        availabilitySelections,
+        guestType,
+        rateSelection,
+        rateResult,
+        bookingConfirmation,
+      }));
+      setCurrentPage("workflow");
+    } catch (error) {
+      console.error("Booking resume error:", error);
+      setModal({
+        type: "error",
+        title: "Booking Could Not Be Resumed",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to load the existing booking.",
+      });
+    }
+  };
+
+  const handleConfirmAcceptance = async (
+    selections: BedSelection[]
+  ) => {
+    console.log(
+  "ACCEPTANCE DEBUG - workflow.booking:",
+  workflow.booking
+);
+
+console.log(
+  "ACCEPTANCE DEBUG - booking.id:",
+  workflow.booking?.id
+);
+
+console.log(
+  "ACCEPTANCE DEBUG - selections:",
+  selections
+);
 
     if (!loggedInUser) {
 
       setModal({
-
         type: "error",
-
-        title:
-          "Session Expired",
-
+        title: "Session Expired",
         message:
-          "Your user session is missing. Please login again.",
-
+          "Please login again.",
       });
 
       return;
     }
 
-
-    if (!bookingDraft?.id) {
+    if (!workflow.booking?.id) {
 
       setModal({
-
         type: "error",
-
         title:
           "Booking ID Missing",
-
         message:
-          "The database booking ID is missing. Please create the booking again.",
-
+          "The booking ID is missing.",
       });
 
       return;
     }
-
 
     if (
       !Array.isArray(
@@ -1051,146 +1468,15 @@ function App() {
     ) {
 
       setModal({
-
         type: "warning",
-
         title:
-          "Room or Bed Required",
-
+          "Selection Required",
         message:
-          "Please select at least one room or bed before confirming the allotment.",
-
+          "Please select a room or bed before continuing.",
       });
 
       return;
     }
-
-
-    /*
-     * IMPORTANT:
-     *
-     * AC / NAC / VIP = WHOLE ROOM
-     * --------------------------------
-     * bedId is intentionally empty.
-     * Do NOT reject the selection.
-     *
-     * DM / HALL = INDIVIDUAL BED/SEAT
-     * --------------------------------
-     * bedId must be present.
-     *
-     * A selection array must never contain
-     * a mixture of room-only and bed
-     * selections.
-     */
-
-    const isWholeRoomSelection =
-      selections.every(
-        (selection) =>
-          !selection.bedId
-      );
-
-    const isBedSelection =
-      selections.every(
-        (selection) =>
-          Boolean(
-            selection.bedId
-          )
-      );
-
-
-    if (
-      !isWholeRoomSelection &&
-      !isBedSelection
-    ) {
-
-      setModal({
-
-        type: "error",
-
-        title:
-          "Invalid Accommodation Selection",
-
-        message:
-          "Please select either a complete room or individual beds/seats. Do not mix the two selection types.",
-
-      });
-
-      return;
-    }
-
-
-    for (
-      const selection
-      of selections
-    ) {
-
-      if (!selection.guestId) {
-
-        setModal({
-
-          type: "warning",
-
-          title:
-            "Guest Assignment Required",
-
-          message:
-            isBedSelection
-              ? "Please assign a guest to every selected bed."
-              : "Please make sure every guest is assigned to the selected room.",
-
-        });
-
-        return;
-      }
-
-
-      if (!selection.roomId) {
-
-        setModal({
-
-          type: "error",
-
-          title:
-            "Room Selection Error",
-
-          message:
-            "A selected room is missing. Please review your room selection.",
-
-        });
-
-        return;
-      }
-
-
-      /*
-       * ONLY DM / HALL requires a bed.
-       *
-       * AC / NAC / VIP deliberately has
-       * no bedId because the complete room
-       * is being allotted.
-       */
-      if (
-        isBedSelection &&
-        !selection.bedId
-      ) {
-
-        setModal({
-
-          type: "error",
-
-          title:
-            "Bed Selection Error",
-
-          message:
-            "A selected bed is missing. Please review your bed selection.",
-
-        });
-
-        return;
-      }
-
-    }
-
 
     const guestIds =
       selections.map(
@@ -1198,83 +1484,43 @@ function App() {
           selection.guestId
       );
 
-
-    const uniqueGuestIds =
-      new Set(
-        guestIds
-      );
-
-
     if (
-      uniqueGuestIds.size !==
-      guestIds.length
+      guestIds.some(
+        (id) => !id
+      )
     ) {
 
       setModal({
-
         type: "warning",
-
         title:
-          "Duplicate Guest Assignment",
-
+          "Guest Assignment Required",
         message:
-          isBedSelection
-            ? "The same guest cannot be allotted to multiple beds."
-            : "Each guest can only be assigned once to the selected room.",
-
+          "Every selected accommodation must have a guest assigned.",
       });
 
       return;
     }
 
+    if (
+      new Set(
+        guestIds
+      ).size !==
+      guestIds.length
+    ) {
 
-    /*
-     * Duplicate bed checking is ONLY
-     * applicable to DM / HALL.
-     *
-     * Whole-room selections intentionally
-     * have no bed IDs.
-     */
-    if (isBedSelection) {
+      setModal({
+        type: "warning",
+        title:
+          "Duplicate Guest Assignment",
+        message:
+          "The same guest cannot be assigned more than once.",
+      });
 
-      const bedIds =
-        selections.map(
-          (selection) =>
-            selection.bedId
-        );
-
-
-      const uniqueBedIds =
-        new Set(
-          bedIds
-        );
-
-
-      if (
-        uniqueBedIds.size !==
-        bedIds.length
-      ) {
-
-        setModal({
-
-          type: "warning",
-
-          title:
-            "Duplicate Bed Selection",
-
-          message:
-            "The same bed cannot be selected more than once.",
-
-        });
-
-        return;
-      }
-
+      return;
     }
 
-
     const bookingGuestIds =
-      bookingDraft.guests
+      workflow.booking.guests
         .map(
           (guest) =>
             guest.id
@@ -1285,7 +1531,6 @@ function App() {
           ): id is string =>
             Boolean(id)
         );
-
 
     for (
       const guestId
@@ -1299,15 +1544,11 @@ function App() {
       ) {
 
         setModal({
-
           type: "error",
-
           title:
-            "Invalid Guest Assignment",
-
+            "Invalid Guest",
           message:
             "One or more selected guests do not belong to this booking.",
-
         });
 
         return;
@@ -1315,219 +1556,1116 @@ function App() {
 
     }
 
-
     try {
 
-      const response =
-        await fetch(
-          "http://localhost:5000/api/allotments/bulk",
-          {
-            method: "POST",
+      for (
+        const selection
+        of selections
+      ) {
 
-            headers: {
-              "Content-Type":
-                "application/json",
-            },
+        const response =
+          await apiFetch(
+            "http://localhost:5000/api/acceptances",
+            {
+              method: "POST",
 
-            body:
-              JSON.stringify({
+              headers: {
+                "Content-Type":
+                  "application/json",
+              },
 
-                booking_id:
-                  bookingDraft.id,
+              body:
+                JSON.stringify({
 
-                allotted_by:
-                  loggedInUser.id,
+                  booking_id:
+                    workflow.booking.id,
 
-                is_emergency_allotment:
-                  false,
+                  guest_id:
+                    selection.guestId,
 
-                remarks:
-                  null,
+                  room_id:
+                    selection.roomId,
 
-                selections:
-                  selections.map(
-                    (selection) => ({
+                  ...(selection.bedId
+                    ? {
+                        bed_id:
+                          selection.bedId,
+                      }
+                    : {}),
 
-                      guest_id:
-                        selection.guestId,
+                  remarks:
+                    "Guest accepted selected accommodation.",
 
-                      room_id:
-                        selection.roomId,
+                }),
 
-                      /*
-                       * Whole-room AC/NAC/VIP
-                       * allotment intentionally sends
-                       * no bed ID.
-                       *
-                       * DM/HALL sends the exact
-                       * selected bed/seat.
-                       */
-                      ...(selection.bedId
-                        ? {
-                            bed_id:
-                              selection.bedId,
-                          }
-                        : {}),
+            }
+          );
 
-                    })
-                  ),
+        const data =
+          await response.json();
 
-              }),
+        if (!response.ok) {
 
-          }
-        );
+          throw new Error(
+            [
+              data.message ||
+                "Unable to save accommodation acceptance.",
+              data.error,
+            ]
+              .filter(
+                (detail): detail is string =>
+                  typeof detail === "string" &&
+                  detail.trim().length > 0
+              )
+              .join(" ")
+          );
 
+        }
 
-      const data =
-        await response.json();
-
-
-      if (!response.ok) {
-
-        console.error(
-          "Bulk allotment API error:",
-          data
-        );
-
-        setModal({
-
-          type: "error",
-
-          title:
-            "Allotment Could Not Be Completed",
-
-          message:
-            data.message ||
-            "Unable to complete room/bed allotment.",
-
-        });
-
-        return;
       }
 
+      const acceptedAccommodation:
+        AcceptedAccommodation[] =
+        selections.map(
+          (selection) => ({
+
+            roomId:
+              selection.roomId,
+
+            roomName:
+              selection.roomName,
+
+            bedId:
+              selection.bedId ||
+              undefined,
+
+            bedNumber:
+              selection.bedNumber ||
+              undefined,
+
+            guestId:
+              selection.guestId,
+
+            guestName:
+              selection.occupantName,
+
+          })
+        );
+
+      await saveBookingProgress(
+        workflow.booking.id,
+        "GUEST_TYPE",
+        {
+          availability_selections: selections,
+        }
+      );
+
+      setWorkflow(
+        (current) => ({
+          ...current,
+          stage:
+            "GUEST_TYPE",
+          acceptedAccommodation,
+          availabilitySelections:
+            selections,
+        })
+      );
 
       setModal({
-
         type: "success",
-
         title:
-          "Allotment Completed Successfully",
-
+          "Accommodation Accepted",
         message:
-          isWholeRoomSelection
-            ? "The complete room allotment has been recorded successfully."
-            : "The selected bed/seat allotment has been recorded successfully.",
-
+          "The selected room/bed has been accepted. Physical room locking will happen only after approval, payment and invoice.",
         onCloseAction: () => {
-
-          setBookingDraft(
-            null
-          );
-
-          setExplicitAuthoritySelection(
-            null
-          );
-
           setCurrentPage(
-            "dashboard"
+            "workflow"
           );
-
         },
-
       });
 
     } catch (error) {
 
       console.error(
-        "Bulk allotment connection error:",
+        "Acceptance API error:",
         error
       );
 
       setModal({
-
         type: "error",
-
         title:
-          "Allotment Server Unavailable",
-
+          "Acceptance Could Not Be Saved",
         message:
-          "Unable to connect to the allotment server. Please make sure the backend is running and try again.",
-
+          error instanceof Error
+            ? error.message
+            : "Unable to save accommodation acceptance.",
       });
 
     }
 
   };
 
+  /* =========================================
+     GUEST TYPE
+  ========================================= */
+
+  const handleGuestTypeContinue = async (
+    guestType: GuestTypeValue
+  ) => {
+
+    if (!workflow.booking?.id) {
+      return;
+    }
+
+    try {
+      await saveBookingProgress(
+        workflow.booking.id,
+        "RATE",
+        { guest_type: guestType }
+      );
+    } catch (error) {
+      setModal({
+        type: "error",
+        title: "Booking Progress Could Not Be Saved",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to save the selected guest type.",
+      });
+      return;
+    }
+
+    setWorkflow(
+      (current) => ({
+        ...current,
+        stage:
+          "RATE",
+        guestType,
+      })
+    );
+
+  };
+
+  const handleBookingStepBack = async (
+    currentStep:
+      | "AVAILABILITY"
+      | "GUEST_TYPE"
+      | "RATE"
+      | "BOOKING_CONFIRMATION",
+    nextStage:
+      | "AVAILABILITY"
+      | "GUEST_TYPE"
+      | "RATE"
+      | "BOOKING_CONFIRMATION"
+  ) => {
+    if (workflow.booking?.id) {
+      try {
+        await saveBookingProgress(
+          workflow.booking.id,
+          currentStep,
+          workflow.guestType
+            ? { guest_type: workflow.guestType }
+            : {}
+        );
+      } catch (error) {
+        setModal({
+          type: "error",
+          title: "Booking Progress Could Not Be Saved",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Unable to save the current booking step.",
+        });
+        return;
+      }
+    }
+
+    setWorkflow((current) => ({
+      ...current,
+      stage: nextStage,
+    }));
+  };
 
   /* =========================================
-     NAVIGATION
+     RATE
+  ========================================= */
+
+  const handleRateContinue = async (
+    selection: RateSelection
+  ) => {
+
+    if (
+      !workflow.booking ||
+      !workflow.guestType
+    ) {
+      return;
+    }
+
+    try {
+      const response = await apiFetch(
+        `http://localhost:5000/api/bookings/${workflow.booking.id}/pricing`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            guest_type: workflow.guestType,
+            accommodation_category:
+              selection.accommodationCategory,
+          }),
+        }
+      );
+
+      const data = await response.json();
+      if (!response.ok || !data?.pricing) {
+        throw new Error(
+          data?.message || "Unable to calculate booking pricing."
+        );
+      }
+
+      const authoritativeResult: RateResult = {
+        accommodationRate:
+          Number(data.pricing.accommodationRate),
+        accommodationDays:
+          Number(data.pricing.accommodationDays),
+        accommodationAmount:
+          Number(data.pricing.accommodationAmount),
+        additionalRetiredAmount:
+          Number(data.pricing.additionalRetiredAmount),
+        additionalOtherRelationAmount:
+          Number(data.pricing.additionalOtherRelationAmount),
+        additionalMemberAmount:
+          Number(data.pricing.additionalMemberAmount),
+        totalAmount:
+          Number(data.pricing.totalAmount),
+      };
+
+      setWorkflow((current) => ({
+        ...current,
+        stage: "BOOKING_CONFIRMATION",
+        rateSelection: selection,
+        rateResult: authoritativeResult,
+      }));
+    } catch (error) {
+      console.error("Booking pricing API error:", error);
+      setModal({
+        type: "error",
+        title: "Pricing Could Not Be Saved",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to calculate and save booking pricing.",
+      });
+    }
+
+  };
+
+  /* =========================================
+     BOOKING CONFIRMATION
+  ========================================= */
+
+  const handleBookingConfirmation = async () => {
+
+    if (
+      !workflow.booking ||
+      !workflow.guestType ||
+      !workflow.rateSelection ||
+      !workflow.rateResult
+    ) {
+
+      setModal({
+        type: "error",
+        title:
+          "Booking Information Incomplete",
+        message:
+          "Guest type and rate information are required before continuing.",
+      });
+
+      return;
+    }
+
+    if (!workflow.booking.id) {
+      setModal({
+        type: "error",
+        title: "Booking ID Missing",
+        message: "The existing booking ID is required to complete this submission.",
+      });
+      return;
+    }
+
+    try {
+      await saveBookingProgress(
+        workflow.booking.id,
+        "BOOKING_CONFIRMATION",
+        {
+          guest_type: workflow.guestType,
+          availability_selections:
+            workflow.availabilitySelections,
+        }
+      );
+    } catch (error) {
+      setModal({
+        type: "error",
+        title: "Booking Progress Could Not Be Saved",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to save the booking confirmation progress.",
+      });
+      return;
+    }
+
+    const confirmation:
+      BookingConfirmationData = {
+
+      bookingType:
+        workflow.booking.bookingType,
+
+      category:
+        String(
+          workflow.rateSelection
+            .accommodationCategory
+        ),
+
+      serviceman:
+        workflow.booking.serviceman,
+
+      guests:
+        workflow.booking.guests,
+
+      checkIn:
+        workflow.booking.checkIn,
+
+      checkOut:
+        workflow.booking.checkOut,
+
+      acceptedAccommodation:
+        workflow.acceptedAccommodation,
+
+      guestType:
+        workflow.guestType,
+
+      rateSelection:
+        workflow.rateSelection,
+
+      rateResult:
+        workflow.rateResult,
+
+    };
+
+    setWorkflow(
+      (current) => ({
+        ...current,
+        stage:
+          "BOOKING_APPROVAL",
+        bookingConfirmation:
+          confirmation,
+      })
+    );
+
+  };
+
+  /* =========================================
+     APPROVAL
+  ========================================= */
+
+  const handleApprovalDecision = async (
+    decision: ApprovalDecision,
+    remarks: string
+  ) => {
+    if (!loggedInUser) {
+      setModal({
+        type: "error",
+        title: "Session Expired",
+        message: "Please login again.",
+      });
+      return;
+    }
+
+    if (!workflow.booking?.id) {
+      setModal({
+        type: "error",
+        title: "Booking ID Missing",
+        message:
+          "Booking ID is required for approval.",
+      });
+      return;
+    }
+
+    if (
+      decision === "REJECTED" &&
+      !remarks.trim()
+    ) {
+      setModal({
+        type: "warning",
+        title: "Remarks Required",
+        message:
+          "Please enter remarks before rejecting the booking.",
+      });
+      return;
+    }
+
+    try {
+      const endpoint =
+        decision === "APPROVED"
+          ? `http://localhost:5000/api/approvals/${workflow.booking.id}/approve`
+          : `http://localhost:5000/api/approvals/${workflow.booking.id}/reject`;
+
+      const response = await apiFetch(
+        endpoint,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            approver_id:
+              loggedInUser.id,
+            remarks:
+              remarks.trim() || null,
+          }),
+        }
+      );
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.message ||
+          "Unable to process booking approval."
+        );
+      }
+
+      if (decision === "APPROVED") {
+        setWorkflow((current) => ({
+          ...current,
+          approvalDecision:
+            "APPROVED",
+          approvalRemarks:
+            remarks,
+          stage: "PAYMENT",
+        }));
+
+        setModal({
+          type: "success",
+          title:
+            "Booking Approved",
+          message:
+            data.message ||
+            "Booking has been approved successfully. Proceed to payment.",
+          onCloseAction: () => {
+            setCurrentPage(
+              "workflow"
+            );
+          },
+        });
+
+        return;
+      }
+
+      setWorkflow((current) => ({
+        ...current,
+        approvalDecision:
+          "REJECTED",
+        approvalRemarks:
+          remarks,
+        stage:
+          "BOOKING_APPROVAL",
+      }));
+
+      setModal({
+        type: "warning",
+        title:
+          "Booking Rejected",
+        message:
+          data.message ||
+          "The booking has been rejected successfully.",
+        onCloseAction: () => {
+          resetWorkflow();
+          setCurrentPage(
+            "dashboard"
+          );
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Approval API error:",
+        error
+      );
+
+      setModal({
+        type: "error",
+        title:
+          "Approval Failed",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to process booking approval.",
+      });
+    }
+  };
+
+  /* =========================================
+     PAYMENT
+  ========================================= */
+
+  const handlePaymentContinue = async (
+    payment: PaymentData
+  ) => {
+    if (!loggedInUser) {
+      setModal({
+        type: "error",
+        title: "Session Expired",
+        message: "Please login again.",
+      });
+      return;
+    }
+
+    if (!workflow.booking?.id) {
+      setModal({
+        type: "error",
+        title: "Booking ID Missing",
+        message:
+          "Booking ID is required for payment.",
+      });
+      return;
+    }
+
+    if (!workflow.guestType) {
+      setModal({
+        type: "error",
+        title: "Guest Type Missing",
+        message:
+          "Guest type is required before payment.",
+      });
+      return;
+    }
+
+    if (!workflow.rateResult) {
+      setModal({
+        type: "error",
+        title: "Rate Information Missing",
+        message:
+          "Approved booking amount is not available.",
+      });
+      return;
+    }
+
+    const primaryGuest =
+      workflow.booking.guests[0];
+
+    if (!primaryGuest?.id) {
+      setModal({
+        type: "error",
+        title: "Guest ID Missing",
+        message:
+          "Primary guest information is missing.",
+      });
+      return;
+    }
+
+    try {
+      const response =
+        await apiFetch(
+          "http://localhost:5000/api/payments",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body: JSON.stringify({
+              booking_id:
+                workflow.booking.id,
+              guest_id:
+                primaryGuest.id,
+              amount:
+                payment.amountReceived,
+              payment_method:
+                payment.paymentMethod,
+              transaction_number:
+                payment.transactionNumber ||
+                null,
+              payment_date:
+                payment.paymentDate,
+              remarks:
+                payment.remarks || null,
+              received_by:
+                loggedInUser.id,
+            }),
+          }
+        );
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.message ||
+          "Unable to record payment."
+        );
+      }
+
+      const paymentId =
+        data.payment?.id ||
+        data.payment_id ||
+        data.id;
+
+      if (!paymentId) {
+        throw new Error(
+          "Payment was recorded, but the payment ID was not returned by the server."
+        );
+      }
+
+      setWorkflow((current) => ({
+        ...current,
+        payment,
+        paymentId,
+        stage: "INVOICE",
+      }));
+
+      setModal({
+        type: "success",
+        title:
+          "Payment Recorded",
+        message:
+          `Payment of ₹${payment.amountReceived.toFixed(
+            2
+          )} has been recorded successfully.`,
+        onCloseAction: () => {
+          setCurrentPage(
+            "workflow"
+          );
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Payment API error:",
+        error
+      );
+
+      setModal({
+        type: "error",
+        title:
+          "Payment Failed",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to record payment.",
+      });
+    }
+  };
+
+  /* =========================================
+     INVOICE
+  ========================================= */
+
+  const handleInvoiceContinue = async (
+    invoice: InvoiceData
+  ) => {
+    if (!loggedInUser) {
+      setModal({
+        type: "error",
+        title: "Session Expired",
+        message: "Please login again.",
+      });
+      return;
+    }
+
+    if (!workflow.booking?.id) {
+      setModal({
+        type: "error",
+        title: "Booking ID Missing",
+        message:
+          "Booking ID is required for invoice generation.",
+      });
+      return;
+    }
+
+    if (!workflow.paymentId) {
+      setModal({
+        type: "error",
+        title: "Payment ID Missing",
+        message:
+          "The payment ID is missing. Please return to payment and record the payment again.",
+      });
+      return;
+    }
+
+    try {
+      const response = await apiFetch(
+        "http://localhost:5000/api/invoices",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            booking_id:
+              workflow.booking.id,
+            payment_id:
+              workflow.paymentId,
+            invoice_type:
+              invoice.invoiceType,
+            invoice_date:
+              invoice.invoiceDate,
+            amount:
+              invoice.paidAmount,
+            generated_by:
+              loggedInUser.id,
+          }),
+        }
+      );
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.message ||
+          "Unable to generate invoice."
+        );
+      }
+
+      const generatedInvoiceNumber =
+        data.invoice?.invoice_number;
+      if (
+        typeof generatedInvoiceNumber !== "string" ||
+        !/^\d{8}$/.test(generatedInvoiceNumber)
+      ) {
+        throw new Error(
+          "The invoice was created, but the server did not return its generated invoice number."
+        );
+      }
+
+      const savedInvoice: InvoiceData = {
+        ...invoice,
+        invoiceNumber: generatedInvoiceNumber,
+        bookingReference:
+          data.booking?.booking_reference ??
+          invoice.bookingReference,
+      };
+
+      setWorkflow(
+        (current) => ({
+          ...current,
+          invoice: savedInvoice,
+          stage: "INVOICE",
+        })
+      );
+
+      setModal({
+        type: "success",
+        title: "Invoice Generated",
+        message:
+          "Invoice generated. Print or save the guest copy, then continue to room locking.",
+        onCloseAction: () => {
+          setCurrentPage(
+            "workflow"
+          );
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Invoice API error:",
+        error
+      );
+
+      setModal({
+        type: "error",
+        title: "Invoice Generation Failed",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to generate invoice.",
+      });
+    }
+  };
+
+  /* =========================================
+     ROOM LOCK
+  ========================================= */
+/* =========================================
+   ROOM LOCK
+========================================= */
+
+const handleRoomLockedContinue = async (
+  data: RoomLockedData
+) => {
+  if (!loggedInUser) {
+    setModal({
+      type: "error",
+      title: "Session Expired",
+      message: "Please login again.",
+    });
+    return;
+  }
+
+  if (!workflow.booking?.id) {
+    setModal({
+      type: "error",
+      title: "Booking ID Missing",
+      message:
+        "Booking ID is required for room locking.",
+    });
+    return;
+  }
+
+  if (!workflow.invoice) {
+    setModal({
+      type: "error",
+      title: "Invoice Missing",
+      message:
+        "Invoice information is required before room locking.",
+    });
+    return;
+  }
+
+  if (!workflow.paymentId) {
+    setModal({
+      type: "error",
+      title: "Payment ID Missing",
+      message:
+        "Payment information is missing. Please verify the payment before locking the room.",
+    });
+    return;
+  }
+
+  if (
+    !Array.isArray(
+      data.accommodations
+    ) ||
+    data.accommodations.length === 0
+  ) {
+    setModal({
+      type: "warning",
+      title: "Accommodation Missing",
+      message:
+        "No accepted room or bed is available for locking.",
+    });
+    return;
+  }
+
+  try {
+    const response = await apiFetch(
+      "http://localhost:5000/api/allotments/lock",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
+        body: JSON.stringify({
+          booking_id:
+            workflow.booking.id,
+
+          allotted_by:
+            loggedInUser.id,
+
+          remarks:
+            `Room locked after approval, payment and invoice. Invoice: ${workflow.invoice.invoiceNumber}`,
+        }),
+      }
+    );
+
+    const result =
+      await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        result.message ||
+          "Unable to lock the room."
+      );
+    }
+
+    setWorkflow(
+      (current) => ({
+        ...current,
+
+        roomLocked:
+          data,
+
+        stage:
+          "CHECK_IN",
+      })
+    );
+
+    setModal({
+      type: "success",
+      title:
+        "Room Locked Successfully",
+      message:
+        result.message ||
+        "The selected room/bed has been physically locked successfully. Proceed to Check-In.",
+      onCloseAction: () => {
+        setCurrentPage(
+          "check-in"
+        );
+      },
+    });
+
+  } catch (error) {
+    console.error(
+      "Room Lock API error:",
+      error
+    );
+
+    setModal({
+      type: "error",
+      title:
+        "Room Lock Failed",
+      message:
+        error instanceof Error
+          ? error.message
+          : "Unable to lock the selected room/bed.",
+    });
+  }
+};
+
+  /* =========================================
+     PRE CHECK-OUT
+  ========================================= */
+
+  const handlePreCheckOutContinue = (
+    data: PreCheckOutData
+  ) => {
+
+    setWorkflow(
+      (current) => ({
+        ...current,
+        preCheckOut:
+          data,
+        stage:
+          "REFUND_CALCULATION",
+      })
+    );
+
+  };
+
+  /* =========================================
+     REFUND CALCULATION
+  ========================================= */
+
+  const handleRefundCalculationContinue = (
+    data: RefundCalculationData
+  ) => {
+
+    setWorkflow(
+      (current) => ({
+        ...current,
+        refundCalculation:
+          data,
+        stage:
+          "REFUND_MEMO",
+      })
+    );
+
+  };
+
+  /* =========================================
+     REFUND MEMO
+  ========================================= */
+
+  const handleRefundMemoContinue = (
+    data: RefundMemoData
+  ) => {
+
+    setWorkflow(
+      (current) => ({
+        ...current,
+        refundMemo:
+          data,
+        stage:
+          "WHATSAPP_FEEDBACK",
+      })
+    );
+
+  };
+
+  /* =========================================
+     FEEDBACK
+  ========================================= */
+
+  const handleFeedbackComplete = (
+    data: WhatsAppFeedbackData
+  ) => {
+
+    setWorkflow(
+      (current) => ({
+        ...current,
+        feedback:
+          data,
+      })
+    );
+
+    setModal({
+      type: "success",
+      title:
+        "Workflow Completed",
+      message:
+        "The booking lifecycle has been completed successfully.",
+      onCloseAction: () => {
+        resetWorkflow();
+        setCurrentPage(
+          "dashboard"
+        );
+      },
+    });
+
+  };
+
+  /* =========================================
+     NORMAL NAVIGATION
   ========================================= */
 
   const handleAvailability = () => {
-
     setCurrentPage(
       "availability"
     );
-
   };
 
-
   const handleCheckIn = () => {
-
     setCurrentPage(
       "check-in"
     );
-
   };
 
-
   const handleCheckOut = () => {
-
     setCurrentPage(
       "check-out"
     );
-
   };
 
-
   const handleHousekeeping = () => {
-
     setCurrentPage(
       "housekeeping"
     );
-
   };
 
-
-  /* =========================================
-     PENDING APPROVALS
-  ========================================= */
-
   const handleApprovals = () => {
-
     setCurrentPage(
       "approvals"
     );
-
   };
 
-
-  /* =========================================
-     BACK TO DASHBOARD
-  ========================================= */
+  const handleLostAndFound = () => {
+    setCurrentPage(
+      "lost-and-found"
+    );
+  };
 
   const handleBackToDashboard = () => {
-
     setCurrentPage(
       "dashboard"
     );
-
   };
 
-
   /* =========================================
-     SHARED MODAL
+     MODAL
   ========================================= */
 
   const renderModal = () => {
@@ -1537,9 +2675,7 @@ function App() {
     }
 
     return (
-
       <AppModal
-
         type={
           modal.type
         }
@@ -1561,22 +2697,18 @@ function App() {
         onClose={
           closeModal
         }
-
       />
-
     );
 
   };
 
-
   /* =========================================
-     MODERN SPLASH SCREEN
+     SPLASH
   ========================================= */
 
   if (showSplash) {
 
     return (
-
       <main className="modern-splash-screen">
 
         <div className="splash-background-orb splash-orb-one" />
@@ -1588,26 +2720,18 @@ function App() {
         <div className="modern-splash-card">
 
           <div className="splash-top-line">
-
             <span />
-
             <span />
-
             <span />
-
           </div>
-
 
           <div className="modern-splash-content">
 
             <div className="modern-splash-emblem">
-
               <div className="modern-splash-emblem-inner">
                 ESM
               </div>
-
             </div>
-
 
             <div className="modern-splash-heading">
 
@@ -1625,19 +2749,11 @@ function App() {
 
             </div>
 
-
             <div className="splash-divider">
-
               <span />
-
-              <b>
-                •
-              </b>
-
+              <b>•</b>
               <span />
-
             </div>
-
 
             <div className="splash-location">
 
@@ -1649,13 +2765,10 @@ function App() {
 
             </div>
 
-
             <div className="splash-loading">
 
               <div className="splash-loading-track">
-
                 <div className="splash-loading-fill" />
-
               </div>
 
               <div className="splash-loading-text">
@@ -1674,7 +2787,6 @@ function App() {
 
           </div>
 
-
           <div className="modern-splash-footer">
 
             <span>
@@ -1690,30 +2802,38 @@ function App() {
         </div>
 
       </main>
-
     );
 
   }
-
 
   /* =========================================
      LOGIN
   ========================================= */
 
   if (!loggedInUser) {
+    if (isRestoringSession) {
+      return (
+        <main
+          style={{
+            minHeight: "100vh",
+            display: "grid",
+            placeItems: "center",
+          }}
+        >
+          <p>Restoring your secure session...</p>
+        </main>
+      );
+    }
 
     return (
-
       <Login
         onLogin={
           handleLogin
         }
       />
-
     );
 
   }
-
 
   /* =========================================
      CREATE USER
@@ -1727,11 +2847,8 @@ function App() {
   ) {
 
     return (
-
       <>
-
         <CreateUser
-
           users={
             users
           }
@@ -1751,17 +2868,13 @@ function App() {
           onBack={
             handleBackToDashboard
           }
-
         />
 
         {renderModal()}
-
       </>
-
     );
 
   }
-
 
   /* =========================================
      BOOKING
@@ -1781,13 +2894,9 @@ function App() {
             loggedInUser.role
           );
 
-
     return (
-
       <>
-
         <Booking
-
           category={
             bookingCategory
           }
@@ -1807,37 +2916,36 @@ function App() {
           onContinue={
             handleBookingContinue
           }
-
         />
 
         {renderModal()}
-
       </>
-
     );
 
   }
 
-
   /* =========================================
-     AVAILABILITY
+     WORKFLOW AVAILABILITY
   ========================================= */
 
   if (
     currentPage ===
-    "availability"
+      "workflow" &&
+    workflow.stage ===
+      "AVAILABILITY"
   ) {
 
     return (
-
       <>
-
         <Availability
-
           category={
-            getAccommodationCategory(
-              loggedInUser.role
-            )
+            explicitAuthoritySelection
+              ? getAuthorityBookingCategory(
+                  explicitAuthoritySelection.categoryName
+                )
+              : getAccommodationCategory(
+                  loggedInUser.role
+                )
           }
 
           role={
@@ -1845,31 +2953,1308 @@ function App() {
           }
 
           booking={
-            bookingDraft
+            workflow.booking
+          }
+
+          initialSelections={
+            workflow.availabilitySelections
           }
 
           authoritySelection={
             explicitAuthoritySelection
           }
 
+          onSelectionsChange={
+            handleAvailabilitySelectionsChange
+          }
+
           onConfirmBooking={
-            handleConfirmAllotment
+            handleConfirmAcceptance
           }
 
-          onBack={
-            handleBackToDashboard
-          }
-
+          onBack={() => {
+            setCurrentPage(
+              "booking"
+            );
+          }}
         />
 
         {renderModal()}
-
       </>
-
     );
 
   }
 
+  /* =========================================
+     GUEST TYPE
+  ========================================= */
+
+  if (
+    currentPage ===
+      "workflow" &&
+    workflow.stage ===
+      "GUEST_TYPE"
+  ) {
+
+    if (!workflow.booking) {
+
+      resetWorkflow();
+
+      setCurrentPage(
+        "dashboard"
+      );
+
+      return null;
+
+    }
+
+    return (
+      <>
+        <GuestType
+          officerName={
+            loggedInUser.name
+          }
+
+          onBack={() => {
+            void handleBookingStepBack(
+              "AVAILABILITY",
+              "AVAILABILITY"
+            );
+          }}
+
+          onContinue={
+            handleGuestTypeContinue
+          }
+        />
+
+        {renderModal()}
+      </>
+    );
+
+  }
+
+  /* =========================================
+     RATE
+  ========================================= */
+
+  if (
+    currentPage ===
+      "workflow" &&
+    workflow.stage ===
+      "RATE"
+  ) {
+
+    if (
+      !workflow.booking ||
+      !workflow.guestType
+    ) {
+
+      resetWorkflow();
+
+      setCurrentPage(
+        "dashboard"
+      );
+
+      return null;
+
+    }
+
+    const rateCategory =
+      getRateAccommodationCategory(
+        workflow.booking.category
+      );
+
+    const numberOfRooms = new Set(
+      workflow.acceptedAccommodation
+        .filter((item) => !item.bedId)
+        .map((item) => item.roomId)
+    ).size;
+
+    const numberOfBeds = new Set(
+      workflow.acceptedAccommodation
+        .filter((item) => Boolean(item.bedId))
+        .map((item) => item.bedId)
+    ).size;
+
+    /*
+     * Booking.tsx currently does not
+     * contain separate additional-member
+     * billing classifications.
+     *
+     * Therefore these remain zero here
+     * instead of inventing a classification.
+     */
+    const additionalRetiredMembers = 0;
+
+    const additionalOtherRelations = 0;
+
+    return (
+      <>
+        <Rate
+          officerName={
+            loggedInUser.name
+          }
+
+          guestType={
+            workflow.guestType
+          }
+
+          accommodationCategory={
+            rateCategory
+          }
+
+          checkIn={
+            workflow.booking.checkIn
+          }
+
+          checkOut={
+            workflow.booking.checkOut
+          }
+
+          numberOfRooms={
+            numberOfRooms
+          }
+
+          numberOfBeds={
+            numberOfBeds
+          }
+
+          additionalRetiredMembers={
+            additionalRetiredMembers
+          }
+
+          additionalOtherRelations={
+            additionalOtherRelations
+          }
+
+          onBack={() => {
+            void handleBookingStepBack(
+              "GUEST_TYPE",
+              "GUEST_TYPE"
+            );
+          }}
+
+          onContinue={
+            handleRateContinue
+          }
+        />
+
+        {renderModal()}
+      </>
+    );
+
+  }
+
+  /* =========================================
+     BOOKING CONFIRMATION
+  ========================================= */
+
+  if (
+    currentPage ===
+      "workflow" &&
+    workflow.stage ===
+      "BOOKING_CONFIRMATION"
+  ) {
+
+    if (
+      !workflow.booking ||
+      !workflow.guestType ||
+      !workflow.rateSelection ||
+      !workflow.rateResult ||
+      !workflow.bookingConfirmation
+    ) {
+
+      if (
+        workflow.booking &&
+        workflow.guestType &&
+        workflow.rateSelection &&
+        workflow.rateResult
+      ) {
+
+        const confirmation:
+          BookingConfirmationData = {
+
+          bookingType:
+            workflow.booking.bookingType,
+
+          category:
+            String(
+              workflow.rateSelection
+                .accommodationCategory
+            ),
+
+          serviceman:
+            workflow.booking.serviceman,
+
+          guests:
+            workflow.booking.guests,
+
+          checkIn:
+            workflow.booking.checkIn,
+
+          checkOut:
+            workflow.booking.checkOut,
+
+          acceptedAccommodation:
+            workflow.acceptedAccommodation,
+
+          guestType:
+            workflow.guestType,
+
+          rateSelection:
+            workflow.rateSelection,
+
+          rateResult:
+            workflow.rateResult,
+
+        };
+
+        setWorkflow(
+          (current) => ({
+            ...current,
+            bookingConfirmation:
+              confirmation,
+          })
+        );
+
+      }
+
+    }
+
+    const confirmation =
+      workflow.bookingConfirmation;
+
+    if (!confirmation) {
+      return null;
+    }
+
+    return (
+      <>
+        <BookingConfirmation
+          officerName={
+            loggedInUser.name
+          }
+
+          booking={
+            confirmation
+          }
+
+          onBack={() => {
+            void handleBookingStepBack(
+              "RATE",
+              "RATE"
+            );
+          }}
+
+          onConfirm={
+            handleBookingConfirmation
+          }
+        />
+
+        {renderModal()}
+      </>
+    );
+
+  }
+
+  /* =========================================
+     BOOKING APPROVAL
+  ========================================= */
+
+  if (
+    currentPage ===
+      "workflow" &&
+    workflow.stage ===
+      "BOOKING_APPROVAL"
+  ) {
+
+    if (
+      !workflow.booking ||
+      !workflow.bookingConfirmation ||
+      !workflow.guestType ||
+      !workflow.rateResult ||
+      !workflow.rateSelection
+    ) {
+
+      resetWorkflow();
+
+      setCurrentPage(
+        "dashboard"
+      );
+
+      return null;
+
+    }
+
+    const approvalAccommodation:
+      ApprovalAccommodation[] =
+      workflow.acceptedAccommodation.map(
+        (item) => ({
+          roomId:
+            item.roomId,
+
+          roomName:
+            item.roomName,
+
+          category:
+            getAcceptedAccommodationCategory(
+              item
+            ),
+
+          bedId:
+            item.bedId,
+
+          bedNumber:
+            item.bedNumber,
+
+          guestId:
+            item.guestId,
+
+          guestName:
+            item.guestName,
+        })
+      );
+
+    const approvalData:
+      BookingApprovalData = {
+
+      bookingId:
+        workflow.booking.id,
+
+      /*
+       * BookingDraft currently stores the
+       * database ID but not booking_reference.
+       * Therefore no fake reference is generated.
+       */
+
+      bookingType:
+        workflow.booking.bookingType,
+
+      guestType:
+        workflow.guestType,
+
+      category:
+        String(
+          workflow.rateSelection
+            .accommodationCategory
+        ),
+
+      serviceman:
+        workflow.booking.serviceman,
+
+      guests:
+        workflow.booking.guests.map(
+          (guest) => ({
+            id:
+              guest.id,
+
+            name:
+              guest.name,
+
+            gender:
+              guest.gender,
+
+            relationship:
+              guest.relationship,
+
+            mobile:
+              guest.mobile,
+
+            relationshipProofType:
+              guest.relationshipProofType,
+
+            relationshipProofNumber:
+              guest.relationshipProofNumber,
+          })
+        ),
+
+      checkIn:
+        workflow.booking.checkIn,
+
+      checkOut:
+        workflow.booking.checkOut,
+
+      acceptedAccommodation:
+        approvalAccommodation,
+
+      accommodationAmount:
+        workflow.rateResult
+          .accommodationAmount,
+
+      additionalMemberAmount:
+        workflow.rateResult
+          .additionalMemberAmount,
+
+      totalAmount:
+        workflow.rateResult
+          .totalAmount,
+
+    };
+
+    return (
+      <>
+        <BookingApproval
+          officerName={
+            loggedInUser.name
+          }
+
+          booking={
+            approvalData
+          }
+
+          onBack={() => {
+            void handleBookingStepBack(
+              "BOOKING_CONFIRMATION",
+              "BOOKING_CONFIRMATION"
+            );
+          }}
+
+          onDecision={
+            handleApprovalDecision
+          }
+        />
+
+        {renderModal()}
+      </>
+    );
+
+  }
+
+  /* =========================================
+     PAYMENT
+  ========================================= */
+
+  if (
+    currentPage ===
+      "workflow" &&
+    workflow.stage ===
+      "PAYMENT"
+  ) {
+
+    if (
+      !workflow.booking ||
+      !workflow.guestType ||
+      !workflow.rateResult
+    ) {
+
+      resetWorkflow();
+
+      setCurrentPage(
+        "dashboard"
+      );
+
+      return null;
+
+    }
+
+    const primaryGuest =
+      workflow.booking.guests[0];
+
+    return (
+      <>
+        <Payment
+          officerName={
+            loggedInUser.name
+          }
+
+          bookingId={
+            workflow.booking.id
+          }
+
+          bookingReference={
+            workflow.invoice?.bookingReference
+          }
+
+          guestName={
+            primaryGuest?.name ||
+            workflow.booking
+              .serviceman.name
+          }
+
+          guestType={
+            workflow.guestType
+          }
+
+          approvedAmount={
+            workflow.rateResult
+              .totalAmount
+          }
+
+          onBack={() => {
+            setWorkflow(
+              (current) => ({
+                ...current,
+                stage:
+                  "BOOKING_APPROVAL",
+              })
+            );
+          }}
+
+          onContinue={
+            handlePaymentContinue
+          }
+        />
+
+        {renderModal()}
+      </>
+    );
+
+  }
+
+  /* =========================================
+     INVOICE
+  ========================================= */
+
+  if (
+    currentPage ===
+      "workflow" &&
+    workflow.stage ===
+      "INVOICE"
+  ) {
+
+    if (
+      !workflow.booking ||
+      !workflow.guestType ||
+      !workflow.rateResult ||
+      !workflow.payment
+    ) {
+
+      resetWorkflow();
+
+      setCurrentPage(
+        "dashboard"
+      );
+
+      return null;
+
+    }
+
+    const primaryGuest =
+      workflow.booking.guests[0];
+
+    return (
+      <>
+        <Invoice
+          officerName={
+            loggedInUser.name
+          }
+
+          bookingId={
+            workflow.booking.id
+          }
+
+          bookingReference={
+            undefined
+          }
+
+          guestName={
+            primaryGuest?.name ||
+            workflow.booking
+              .serviceman.name
+          }
+
+          guestType={
+            workflow.guestType
+          }
+
+          totalAmount={
+            workflow.rateResult
+              .totalAmount
+          }
+
+          paidAmount={
+            workflow.payment
+              .amountReceived
+          }
+
+          paymentMethod={
+            workflow.payment
+              .paymentMethod
+          }
+
+          transactionNumber={
+            workflow.payment
+              .transactionNumber
+          }
+
+          paymentDate={
+            workflow.payment
+              .paymentDate
+          }
+
+          checkIn={
+            workflow.booking.checkIn
+          }
+
+          checkOut={
+            workflow.booking.checkOut
+          }
+
+          accommodations={
+            workflow.acceptedAccommodation.map((item) => ({
+              roomName: item.roomName,
+              bedNumber: item.bedNumber,
+              guestName: item.guestName,
+            }))
+          }
+
+          generatedInvoice={
+            workflow.invoice
+          }
+
+          onBack={() => {
+            setWorkflow(
+              (current) => ({
+                ...current,
+                stage:
+                  "PAYMENT",
+              })
+            );
+          }}
+
+          onContinue={
+            handleInvoiceContinue
+          }
+
+          onContinueToRoomLock={() => {
+            setWorkflow((current) => ({
+              ...current,
+              stage: "ROOM_LOCKED",
+            }));
+          }}
+        />
+
+        {renderModal()}
+      </>
+    );
+
+  }
+
+  /* =========================================
+     ROOM LOCKED
+  ========================================= */
+
+  if (
+    currentPage ===
+      "workflow" &&
+    workflow.stage ===
+      "ROOM_LOCKED"
+  ) {
+
+    if (
+      !workflow.booking ||
+      !workflow.guestType ||
+      !workflow.invoice ||
+      !workflow.rateResult
+    ) {
+
+      resetWorkflow();
+
+      setCurrentPage(
+        "dashboard"
+      );
+
+      return null;
+
+    }
+
+    const primaryGuest =
+      workflow.booking.guests[0];
+
+    const lockedAccommodation:
+      LockedAccommodation[] =
+      workflow.acceptedAccommodation.map(
+        (item) => ({
+          roomId:
+            item.roomId,
+
+          roomName:
+            item.roomName,
+
+          bedId:
+            item.bedId,
+
+          bedNumber:
+            item.bedNumber,
+
+          guestName:
+            item.guestName,
+        })
+      );
+
+    return (
+      <>
+        <RoomLocked
+          officerName={
+            loggedInUser.name
+          }
+
+          bookingId={
+            workflow.booking.id
+          }
+
+          bookingReference={
+            undefined
+          }
+
+          guestName={
+            primaryGuest?.name ||
+            workflow.booking
+              .serviceman.name
+          }
+
+          guestType={
+            workflow.guestType
+          }
+
+          invoiceNumber={
+            workflow.invoice
+              .invoiceNumber
+          }
+
+          invoiceType={
+            workflow.invoice
+              .invoiceType
+          }
+
+          totalAmount={
+            workflow.rateResult
+              .totalAmount
+          }
+
+          paidAmount={
+            workflow.payment
+              ?.amountReceived ??
+            workflow.invoice
+              .paidAmount
+          }
+
+          accommodations={
+            lockedAccommodation
+          }
+
+          onBack={() => {
+            setWorkflow(
+              (current) => ({
+                ...current,
+                stage:
+                  "INVOICE",
+              })
+            );
+          }}
+
+          onContinue={
+            handleRoomLockedContinue
+          }
+        />
+
+        {renderModal()}
+      </>
+    );
+
+  }
+
+  /* =========================================
+     PRE CHECK-OUT
+  ========================================= */
+
+  if (
+    currentPage ===
+      "workflow" &&
+    workflow.stage ===
+      "PRE_CHECK_OUT"
+  ) {
+
+    if (
+      !workflow.booking ||
+      !workflow.guestType ||
+      !workflow.roomLocked ||
+      !workflow.rateResult
+    ) {
+
+      resetWorkflow();
+
+      setCurrentPage(
+        "dashboard"
+      );
+
+      return null;
+
+    }
+
+    const primaryGuest =
+      workflow.booking.guests[0];
+
+    const preCheckOutAccommodation:
+      PreCheckOutAccommodation[] =
+      workflow.acceptedAccommodation.map(
+        (item) => ({
+          roomId:
+            item.roomId,
+
+          roomName:
+            item.roomName,
+
+          bedId:
+            item.bedId,
+
+          bedNumber:
+            item.bedNumber,
+        })
+      );
+
+    return (
+      <>
+        <PreCheckOut
+          officerName={
+            loggedInUser.name
+          }
+
+          bookingId={
+            workflow.booking.id
+          }
+
+          bookingReference={
+            undefined
+          }
+
+          guestId={
+            primaryGuest?.id
+          }
+
+          guestName={
+            primaryGuest?.name ||
+            workflow.booking
+              .serviceman.name
+          }
+
+          guestType={
+            workflow.guestType
+          }
+
+          accommodations={
+            preCheckOutAccommodation
+          }
+
+          scheduledCheckOutDate={
+            workflow.booking
+              .checkOut
+              .split("T")[0]
+          }
+
+          totalAmount={
+            workflow.rateResult
+              .totalAmount
+          }
+
+          paidAmount={
+            workflow.payment
+              ?.amountReceived ??
+            0
+          }
+
+          onBack={() => {
+            setCurrentPage(
+              "check-out"
+            );
+          }}
+
+          onContinue={
+            handlePreCheckOutContinue
+          }
+        />
+
+        {renderModal()}
+      </>
+    );
+
+  }
+
+  /* =========================================
+     REFUND CALCULATION
+  ========================================= */
+
+  if (
+    currentPage ===
+      "workflow" &&
+    workflow.stage ===
+      "REFUND_CALCULATION"
+  ) {
+
+    if (
+      !workflow.booking ||
+      !workflow.guestType ||
+      !workflow.preCheckOut ||
+      !workflow.rateResult
+    ) {
+
+      resetWorkflow();
+
+      setCurrentPage(
+        "dashboard"
+      );
+
+      return null;
+
+    }
+
+    const primaryGuest =
+      workflow.booking.guests[0];
+
+    const refundAccommodation:
+      RefundCalculationAccommodation[] =
+      workflow.acceptedAccommodation.map(
+        (item) => ({
+          roomId:
+            item.roomId,
+
+          roomName:
+            item.roomName,
+
+          bedId:
+            item.bedId,
+
+          bedNumber:
+            item.bedNumber,
+        })
+      );
+
+    return (
+      <>
+        <RefundCalculation
+          officerName={
+            loggedInUser.name
+          }
+
+          bookingId={
+            workflow.booking.id
+          }
+
+          bookingReference={
+            undefined
+          }
+
+          guestId={
+            primaryGuest?.id
+          }
+
+          guestName={
+            primaryGuest?.name ||
+            workflow.booking
+              .serviceman.name
+          }
+
+          guestType={
+            workflow.guestType
+          }
+
+          accommodations={
+            refundAccommodation
+          }
+
+          scheduledCheckOutDate={
+            workflow.preCheckOut
+              .scheduledCheckOutDate
+          }
+
+          preCheckOutDate={
+            workflow.preCheckOut
+              .preCheckOutDate
+          }
+
+          totalAmount={
+            workflow.rateResult
+              .totalAmount
+          }
+
+          paidAmount={
+            workflow.preCheckOut
+              .paidAmount
+          }
+
+          reason={
+            workflow.preCheckOut
+              .reason
+          }
+
+          onBack={() => {
+            setWorkflow(
+              (current) => ({
+                ...current,
+                stage:
+                  "PRE_CHECK_OUT",
+              })
+            );
+          }}
+
+          onContinue={
+            handleRefundCalculationContinue
+          }
+        />
+
+        {renderModal()}
+      </>
+    );
+
+  }
+
+  /* =========================================
+     REFUND MEMO
+  ========================================= */
+
+  if (
+    currentPage ===
+      "workflow" &&
+    workflow.stage ===
+      "REFUND_MEMO"
+  ) {
+
+    if (
+      !workflow.booking ||
+      !workflow.guestType ||
+      !workflow.refundCalculation
+    ) {
+
+      resetWorkflow();
+
+      setCurrentPage(
+        "dashboard"
+      );
+
+      return null;
+
+    }
+
+    const primaryGuest =
+      workflow.booking.guests[0];
+
+    const refundMemoAccommodation:
+      RefundMemoAccommodation[] =
+      workflow.acceptedAccommodation.map(
+        (item) => ({
+          roomId:
+            item.roomId,
+
+          roomName:
+            item.roomName,
+
+          bedId:
+            item.bedId,
+
+          bedNumber:
+            item.bedNumber,
+        })
+      );
+
+    return (
+      <>
+        <RefundMemo
+          officerName={
+            loggedInUser.name
+          }
+
+          bookingId={
+            workflow.booking.id
+          }
+
+          bookingReference={
+            undefined
+          }
+
+          guestId={
+            primaryGuest?.id
+          }
+
+          guestName={
+            primaryGuest?.name ||
+            workflow.booking
+              .serviceman.name
+          }
+
+          bookingPersonName={
+            workflow.booking.serviceman.name
+          }
+
+          bookingPersonAddress={
+            workflow.booking.serviceman.address
+          }
+
+          guestType={
+            workflow.guestType
+          }
+
+          accommodations={
+            refundMemoAccommodation
+          }
+
+          scheduledCheckOutDate={
+            workflow.refundCalculation
+              .scheduledCheckOutDate
+          }
+
+          preCheckOutDate={
+            workflow.refundCalculation
+              .preCheckOutDate
+          }
+
+          totalAmount={
+            workflow.refundCalculation
+              .totalAmount
+          }
+
+          paidAmount={
+            workflow.refundCalculation
+              .paidAmount
+          }
+
+          adjustmentAmount={
+            workflow.refundCalculation
+              .adjustmentAmount
+          }
+
+          refundableAmount={
+            workflow.refundCalculation
+              .refundableAmount
+          }
+
+          retainedAmount={
+            workflow.refundCalculation
+              .retainedAmount
+          }
+
+          calculationRemarks={
+            workflow.refundCalculation
+              .remarks
+          }
+
+          onBack={() => {
+            setWorkflow(
+              (current) => ({
+                ...current,
+                stage:
+                  "REFUND_CALCULATION",
+              })
+            );
+          }}
+
+          onContinue={
+            handleRefundMemoContinue
+          }
+        />
+
+        {renderModal()}
+      </>
+    );
+
+  }
+
+  /* =========================================
+     WHATSAPP FEEDBACK
+  ========================================= */
+
+  if (
+    currentPage ===
+      "workflow" &&
+    workflow.stage ===
+      "WHATSAPP_FEEDBACK"
+  ) {
+
+    if (
+      !workflow.booking ||
+      !workflow.guestType
+    ) {
+
+      resetWorkflow();
+
+      setCurrentPage(
+        "dashboard"
+      );
+
+      return null;
+
+    }
+
+    const primaryGuest =
+      workflow.booking.guests[0];
+
+    return (
+      <>
+        <WhatsAppFeedback
+          officerName={
+            loggedInUser.name
+          }
+
+          bookingId={
+            workflow.booking.id
+          }
+
+          bookingReference={
+            undefined
+          }
+
+          guestId={
+            primaryGuest?.id
+          }
+
+          guestName={
+            primaryGuest?.name ||
+            workflow.booking
+              .serviceman.name
+          }
+
+          mobile={
+            primaryGuest?.mobile
+          }
+
+          guestType={
+            workflow.guestType
+          }
+
+          refundMemoNumber={
+            workflow.refundMemo
+              ?.memoNumber
+          }
+
+          refundAmount={
+            workflow.refundMemo
+              ?.refundableAmount ??
+            0
+          }
+
+          onBack={() => {
+
+            if (
+              workflow.refundMemo
+            ) {
+
+              setWorkflow(
+                (current) => ({
+                  ...current,
+                  stage:
+                    "REFUND_MEMO",
+                })
+              );
+
+            } else {
+
+              setCurrentPage(
+                "check-out"
+              );
+
+            }
+
+          }}
+
+          onComplete={
+            handleFeedbackComplete
+          }
+        />
+
+        {renderModal()}
+      </>
+    );
+
+  }
 
   /* =========================================
      CHECK-IN
@@ -1881,11 +4266,8 @@ function App() {
   ) {
 
     return (
-
       <>
-
         <CheckIn
-
           userId={
             loggedInUser.id
           }
@@ -1897,17 +4279,13 @@ function App() {
           onBack={
             handleBackToDashboard
           }
-
         />
 
         {renderModal()}
-
       </>
-
     );
 
   }
-
 
   /* =========================================
      CHECK-OUT
@@ -1919,51 +4297,8 @@ function App() {
   ) {
 
     return (
-
       <>
-
         <CheckOut
-
-          userId={
-            loggedInUser.id
-          }
-
-          userName={
-            loggedInUser.name
-          }
-
-          onBack={
-            handleBackToDashboard
-          }
-
-        />
-
-        {renderModal()}
-
-      </>
-
-    );
-
-  }
-
-
-  /* =========================================
-     HOUSEKEEPING
-  ========================================= */
-
-  if (
-    loggedInUser.role ===
-      "RECEPTIONIST" &&
-    currentPage ===
-      "housekeeping"
-  ) {
-
-    return (
-
-      <>
-
-        <Housekeeping
-
           userId={
             loggedInUser.id
           }
@@ -1979,17 +4314,117 @@ function App() {
           onBack={
             handleBackToDashboard
           }
-
         />
 
         {renderModal()}
-
       </>
-
     );
 
   }
 
+  /* =========================================
+     DIRECT AVAILABILITY
+  ========================================= */
+
+  if (currentPage === "customize-rates") {
+    if (loggedInUser.role !== "ADMIN") {
+      return (
+        <main className="customize-rates-screen">
+          <section className="customize-rates-empty">
+            <strong>Administrator access required</strong>
+            <button type="button" onClick={handleBackToDashboard}>
+              ← Dashboard
+            </button>
+          </section>
+        </main>
+      );
+    }
+
+    return (
+      <>
+        <CustomizeRates onBack={handleBackToDashboard} />
+        {renderModal()}
+      </>
+    );
+  }
+
+  if (
+    currentPage ===
+    "availability"
+  ) {
+
+    return (
+      <>
+        <Availability
+          category={
+            getAccommodationCategory(
+              loggedInUser.role
+            )
+          }
+
+          role={
+            loggedInUser.role
+          }
+
+          booking={
+            null
+          }
+
+          authoritySelection={
+            explicitAuthoritySelection
+          }
+
+          onConfirmBooking={
+            () => {}
+          }
+
+          onBack={
+            handleBackToDashboard
+          }
+        />
+
+        {renderModal()}
+      </>
+    );
+
+  }
+
+  /* =========================================
+     HOUSEKEEPING
+  ========================================= */
+
+  if (
+    loggedInUser.role ===
+      "RECEPTIONIST" &&
+    currentPage ===
+      "housekeeping"
+  ) {
+
+    return (
+      <>
+        <Housekeeping
+          userId={
+            loggedInUser.id
+          }
+
+          userName={
+            loggedInUser.name
+          }
+
+          userRole={
+            loggedInUser.role
+          }
+
+          onBack={
+            handleBackToDashboard
+          }
+        />
+
+        {renderModal()}
+      </>
+    );
+
+  }
 
   /* =========================================
      OTHER AUTHORITY ROOMS
@@ -2003,11 +4438,8 @@ function App() {
   ) {
 
     return (
-
       <>
-
         <OtherAuthorityRooms
-
           role={
             loggedInUser.role
           }
@@ -2019,20 +4451,16 @@ function App() {
           onContinue={
             handleExplicitAuthoritySelection
           }
-
         />
 
         {renderModal()}
-
       </>
-
     );
 
   }
 
-
   /* =========================================
-     PENDING APPROVALS
+     APPROVALS
   ========================================= */
 
   if (
@@ -2051,11 +4479,8 @@ function App() {
   ) {
 
     return (
-
       <>
-
         <Approval
-
           user={
             loggedInUser
           }
@@ -2063,28 +4488,60 @@ function App() {
           onBack={
             handleBackToDashboard
           }
-
         />
 
         {renderModal()}
-
       </>
-
     );
 
   }
 
+  /* =========================================
+     LOST & FOUND
+  ========================================= */
+
+  if (
+    currentPage ===
+    "lost-and-found"
+  ) {
+
+    return (
+      <>
+        <LostAndFound
+          user={
+            loggedInUser
+          }
+
+          onBack={
+            handleBackToDashboard
+          }
+        />
+
+        {renderModal()}
+      </>
+    );
+
+  }
+
+  if (currentPage === "daily-report") {
+    return (
+      <>
+        <DailyReport
+          user={loggedInUser}
+          onBack={handleBackToDashboard}
+        />
+        {renderModal()}
+      </>
+    );
+  }
 
   /* =========================================
      DASHBOARD
   ========================================= */
 
   return (
-
     <>
-
       <Dashboard
-
         user={
           loggedInUser
         }
@@ -2094,27 +4551,31 @@ function App() {
         }
 
         onCreateUser={() => {
-
           setCurrentPage(
             "create-user"
           );
-
         }}
 
         onNewBooking={
           handleNewBooking
         }
 
+        onResumeBooking={
+          handleResumeBooking
+        }
+
         onAvailability={
           handleAvailability
         }
 
-        onOpenOtherAuthorityRooms={() => {
+        onCustomizeRates={() => {
+          setCurrentPage("customize-rates");
+        }}
 
+        onOpenOtherAuthorityRooms={() => {
           setCurrentPage(
             "otherAuthorityRooms"
           );
-
         }}
 
         onCheckIn={
@@ -2133,15 +4594,33 @@ function App() {
           handleApprovals
         }
 
+        onLostAndFound={
+          handleLostAndFound
+        }
+
+        onDailyReport={() => {
+          setCurrentPage("daily-report");
+        }}
       />
 
       {renderModal()}
-
     </>
-
   );
 
 }
 
+/* =========================================
+   LANGUAGE PROVIDER
+========================================= */
+
+function App() {
+
+  return (
+    <LanguageProvider>
+      <AppContent />
+    </LanguageProvider>
+  );
+
+}
 
 export default App;

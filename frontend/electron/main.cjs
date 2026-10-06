@@ -1,7 +1,7 @@
 const { app, BrowserWindow } = require("electron");
 const path = require("path");
 
-function createWindow() {
+async function createWindow() {
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -9,13 +9,25 @@ function createWindow() {
     minHeight: 650,
 
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
 
-  mainWindow.loadURL("http://localhost:5173");
+  try {
+    if (app.isPackaged) {
+      await mainWindow.loadFile(
+        path.join(__dirname, "..", "dist", "index.html")
+      );
+    } else {
+      await mainWindow.loadURL(
+        process.env.VITE_DEV_SERVER_URL || "http://localhost:5173"
+      );
+    }
+  } catch (error) {
+    console.error("Unable to load the ESM Rest House desktop UI:", error);
+  }
 }
 
 app.whenReady().then(() => {

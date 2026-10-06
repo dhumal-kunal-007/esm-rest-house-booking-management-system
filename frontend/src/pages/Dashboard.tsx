@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import "../App.css";
+import { apiFetch } from "../api";
+
+import { useLanguage } from "../i18n/LanguageContext";
 
 import type { User } from "../App";
 
@@ -8,12 +11,16 @@ interface DashboardProps {
   onLogout: () => void;
   onCreateUser: () => void;
   onNewBooking: () => void;
+  onResumeBooking: (bookingId: string) => void;
   onAvailability: () => void;
+  onCustomizeRates: () => void;
   onOpenOtherAuthorityRooms: () => void;
   onCheckIn: () => void;
   onCheckOut: () => void;
   onHousekeeping: () => void;
   onApprovals: () => void;
+  onLostAndFound: () => void;
+  onDailyReport: () => void;
 }
 
 interface DashboardSummary {
@@ -32,6 +39,17 @@ interface RoomStatus {
   hallRooms: number;
 }
 
+interface CollectionSummary {
+  todayTotal: number;
+  todayCash: number;
+  todayUpiQr: number;
+  todayOther: number;
+  monthCash: number;
+  monthUpiQr: number;
+  monthOther: number;
+  monthTotal: number;
+}
+
 interface RecentBooking {
   id: string;
   booking_reference: string;
@@ -43,6 +61,7 @@ interface RecentBooking {
   created_at: string;
   guest_name: string;
   room_number: string;
+  resume_step: string | null;
 }
 
 interface DashboardResponse {
@@ -57,46 +76,74 @@ const dashboardInfo = {
   ADMIN: {
     title: "Administrator Dashboard",
     subtitle: "Overall system management",
+    titleMr: "प्रशासक डॅशबोर्ड",
+    subtitleMr: "संपूर्ण प्रणाली व्यवस्थापन",
   },
 
   DY_DIRECTOR: {
     title: "Deputy Director Dashboard",
     subtitle: "VIP room booking & management",
+    titleMr: "उपसंचालक डॅशबोर्ड",
+    subtitleMr: "व्हीआयपी खोली बुकिंग आणि व्यवस्थापन",
   },
 
   SUPERINTENDENT: {
     title: "Superintendent Dashboard",
     subtitle: "AC room booking & management",
+    titleMr: "अधीक्षक डॅशबोर्ड",
+    subtitleMr: "वातानुकूलित खोली बुकिंग आणि व्यवस्थापन",
   },
 
   WELFARE_ORGANISER: {
     title: "Welfare Organizer Dashboard",
     subtitle: "AC room booking & management",
+    titleMr: "कल्याण संघटक डॅशबोर्ड",
+    subtitleMr: "वातानुकूलित खोली बुकिंग आणि व्यवस्थापन",
   },
 
   OLC_REST_HOUSE_MANAGER: {
     title: "OLC Rest House Manager Dashboard",
     subtitle: "AC room booking & management",
+    titleMr: "OLC विश्रामगृह व्यवस्थापक डॅशबोर्ड",
+    subtitleMr: "वातानुकूलित खोली बुकिंग आणि व्यवस्थापन",
   },
 
   RECEPTIONIST: {
     title: "Receptionist Dashboard",
     subtitle: "Room, bed & guest management",
+    titleMr: "रिसेप्शनिस्ट डॅशबोर्ड",
+    subtitleMr: "खोली, बेड आणि अतिथी व्यवस्थापन",
   },
 } as const;
+
+const formatCurrency = (amount: number): string =>
+  `₹${amount.toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 
 function Dashboard({
   user,
   onLogout,
   onCreateUser,
   onNewBooking,
+  onResumeBooking,
   onAvailability,
+  onCustomizeRates,
   onOpenOtherAuthorityRooms,
   onCheckIn,
   onCheckOut,
   onHousekeeping,
   onApprovals,
+  onLostAndFound,
+  onDailyReport,
 }: DashboardProps) {
+  const {
+    language,
+    setLanguage,
+    t,
+  } = useLanguage();
+
   const information = dashboardInfo[user.role];
 
   const [summary, setSummary] =
@@ -128,17 +175,25 @@ function Dashboard({
 
   const [errorMessage, setErrorMessage] =
     useState("");
+  const [collections, setCollections] =
+    useState<CollectionSummary | null>(null);
+  const [collectionError, setCollectionError] =
+    useState("");
+  const [upiId, setUpiId] = useState("");
+  const [upiPayee, setUpiPayee] = useState("");
+  const [upiConfigLoading, setUpiConfigLoading] = useState(true);
+  const [upiConfigSaving, setUpiConfigSaving] = useState(false);
+  const [upiConfigMessage, setUpiConfigMessage] = useState("");
+  const [upiConfigSaved, setUpiConfigSaved] = useState(false);
 
-  /*
-  |--------------------------------------------------------------------------
-  | LOAD LIVE DASHBOARD DATA
-  |--------------------------------------------------------------------------
-  */
+  /* ============================================================
+     LOAD LIVE DASHBOARD DATA
+  ============================================================ */
 
   const loadDashboardData = useCallback(
     async () => {
       try {
-        const response = await fetch(
+        const response = await apiFetch(
           "http://localhost:5000/api/dashboard/summary",
           {
             method: "GET",
@@ -161,12 +216,6 @@ function Dashboard({
               "Unable to load dashboard information."
           );
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | LIVE SUMMARY
-        |--------------------------------------------------------------------------
-        */
 
         setSummary({
           totalBookings:
@@ -200,12 +249,6 @@ function Dashboard({
             ) || 0,
         });
 
-        /*
-        |--------------------------------------------------------------------------
-        | LIVE ROOM STATUS
-        |--------------------------------------------------------------------------
-        */
-
         setRoomStatus({
           acRooms:
             Number(
@@ -228,12 +271,6 @@ function Dashboard({
             ) || 0,
         });
 
-        /*
-        |--------------------------------------------------------------------------
-        | LIVE RECENT BOOKINGS
-        |--------------------------------------------------------------------------
-        */
-
         setRecentBookings(
           Array.isArray(
             data.recentBookings
@@ -241,6 +278,33 @@ function Dashboard({
             ? data.recentBookings
             : []
         );
+
+        if (user.role === "ADMIN") {
+          try {
+            const collectionResponse = await apiFetch(
+              "http://localhost:5000/api/dashboard/collections",
+              { cache: "no-store" }
+            );
+            const collectionData = await collectionResponse.json();
+            if (!collectionResponse.ok || !collectionData.success) {
+              throw new Error(
+                collectionData.message ||
+                  "Unable to load collection summary."
+              );
+            }
+            setCollections(collectionData.collections);
+            setCollectionError("");
+          } catch (error) {
+            setCollectionError(
+              error instanceof Error
+                ? error.message
+                : "Unable to load collection summary."
+            );
+          }
+        } else {
+          setCollections(null);
+          setCollectionError("");
+        }
 
         setErrorMessage("");
         setLastUpdated(new Date());
@@ -261,14 +325,12 @@ function Dashboard({
         setLoading(false);
       }
     },
-    []
+    [user.role]
   );
 
-  /*
-  |--------------------------------------------------------------------------
-  | INITIAL LOAD + AUTOMATIC REFRESH
-  |--------------------------------------------------------------------------
-  */
+  /* ============================================================
+     INITIAL LOAD + AUTOMATIC REFRESH
+  ============================================================ */
 
   useEffect(() => {
     loadDashboardData();
@@ -285,11 +347,89 @@ function Dashboard({
     };
   }, [loadDashboardData]);
 
-  /*
-  |--------------------------------------------------------------------------
-  | DATE FORMATTING
-  |--------------------------------------------------------------------------
-  */
+  useEffect(() => {
+    if (user.role !== "ADMIN") {
+      return;
+    }
+
+    let cancelled = false;
+    void apiFetch("http://localhost:5000/api/payments/configuration")
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+          throw new Error(
+            data.message || "Unable to load UPI configuration."
+          );
+        }
+        if (!cancelled && data.configuration) {
+          setUpiId(data.configuration.upi_id ?? "");
+          setUpiPayee(data.configuration.payee_name ?? "");
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setUpiConfigMessage(
+            error instanceof Error
+              ? error.message
+              : "Unable to load UPI configuration."
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setUpiConfigLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user.role]);
+
+  const saveUpiConfiguration = async () => {
+    setUpiConfigSaving(true);
+    setUpiConfigMessage("");
+    setUpiConfigSaved(false);
+    try {
+      const response = await apiFetch(
+        "http://localhost:5000/api/payments/configuration",
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            upi_id: upiId,
+            payee_name: upiPayee,
+          }),
+        }
+      );
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message || "Unable to save UPI configuration."
+        );
+      }
+      setUpiId(data.configuration.upi_id);
+      setUpiPayee(data.configuration.payee_name);
+      setUpiConfigMessage(
+        language === "mr"
+          ? "UPI तपशील यशस्वीरित्या जतन केले."
+          : "UPI configuration saved successfully."
+      );
+      setUpiConfigSaved(true);
+    } catch (error) {
+      setUpiConfigMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to save UPI configuration."
+      );
+    } finally {
+      setUpiConfigSaving(false);
+    }
+  };
+
+  /* ============================================================
+     DATE FORMATTING
+  ============================================================ */
 
   const formatDate = (
     value: string
@@ -310,7 +450,9 @@ function Dashboard({
     }
 
     return date.toLocaleDateString(
-      "en-IN",
+      language === "mr"
+        ? "mr-IN"
+        : "en-IN",
       {
         day: "2-digit",
         month: "short",
@@ -319,11 +461,9 @@ function Dashboard({
     );
   };
 
-  /*
-  |--------------------------------------------------------------------------
-  | BOOKING STATUS
-  |--------------------------------------------------------------------------
-  */
+  /* ============================================================
+     BOOKING STATUS
+  ============================================================ */
 
   const getBookingStatus = (
     booking: RecentBooking
@@ -345,7 +485,10 @@ function Dashboard({
       bookingStatus === "OCCUPIED"
     ) {
       return {
-        label: "Checked In",
+        label:
+          language === "mr"
+            ? "चेक-इन झाले"
+            : "Checked In",
         className:
           "dashboard-status dashboard-status-green",
       };
@@ -355,7 +498,10 @@ function Dashboard({
       bookingStatus === "ALLOTTED"
     ) {
       return {
-        label: "Allotted",
+        label:
+          language === "mr"
+            ? "वाटप झाले"
+            : "Allotted",
         className:
           "dashboard-status dashboard-status-blue",
       };
@@ -367,7 +513,10 @@ function Dashboard({
       )
     ) {
       return {
-        label: "Cancelled",
+        label:
+          language === "mr"
+            ? "रद्द केले"
+            : "Cancelled",
         className:
           "dashboard-status dashboard-status-red",
       };
@@ -377,7 +526,10 @@ function Dashboard({
       approvalStatus === "REJECTED"
     ) {
       return {
-        label: "Rejected",
+        label:
+          language === "mr"
+            ? "नाकारले"
+            : "Rejected",
         className:
           "dashboard-status dashboard-status-red",
       };
@@ -387,30 +539,36 @@ function Dashboard({
       approvalStatus === "APPROVED"
     ) {
       return {
-        label: "Approved",
+        label:
+          language === "mr"
+            ? "मंजूर"
+            : "Approved",
         className:
           "dashboard-status dashboard-status-green",
       };
     }
 
     return {
-      label: "Pending",
+      label:
+        language === "mr"
+          ? "प्रलंबित"
+          : "Pending",
       className:
         "dashboard-status dashboard-status-amber",
     };
   };
 
-  /*
-  |--------------------------------------------------------------------------
-  | CURRENT DATE
-  |--------------------------------------------------------------------------
-  */
+  /* ============================================================
+     CURRENT DATE
+  ============================================================ */
 
   const today = new Date();
 
   const formattedToday =
     today.toLocaleDateString(
-      "en-IN",
+      language === "mr"
+        ? "mr-IN"
+        : "en-IN",
       {
         day: "2-digit",
         month: "long",
@@ -418,11 +576,9 @@ function Dashboard({
       }
     );
 
-  /*
-  |--------------------------------------------------------------------------
-  | AUTHORITY APPROVAL ACCESS
-  |--------------------------------------------------------------------------
-  */
+  /* ============================================================
+     AUTHORITY APPROVAL ACCESS
+  ============================================================ */
 
   const canApproveBookings =
     user.role ===
@@ -434,11 +590,12 @@ function Dashboard({
     user.role ===
       "OLC_REST_HOUSE_MANAGER";
 
-  /*
-  |--------------------------------------------------------------------------
-  | RENDER
-  |--------------------------------------------------------------------------
-  */
+  const canCreateBookings =
+    user.role !== "ADMIN";
+
+  /* ============================================================
+     RENDER
+  ============================================================ */
 
   return (
     <main className="modern-dashboard">
@@ -462,7 +619,9 @@ function Dashboard({
             </h1>
 
             <p>
-              Booking &amp; Management System
+              {language === "mr"
+                ? "बुकिंग आणि व्यवस्थापन प्रणाली"
+                : "Booking & Management System"}
             </p>
 
           </div>
@@ -471,10 +630,50 @@ function Dashboard({
 
         <div className="modern-header-right">
 
+          {/* LANGUAGE SWITCHER */}
+
+          <div className="language-switcher">
+
+            <button
+              type="button"
+              className={
+                language === "en"
+                  ? "language-button active"
+                  : "language-button"
+              }
+              onClick={() =>
+                setLanguage("en")
+              }
+            >
+              English
+            </button>
+
+            <span className="language-divider">
+              |
+            </span>
+
+            <button
+              type="button"
+              className={
+                language === "mr"
+                  ? "language-button active"
+                  : "language-button"
+              }
+              onClick={() =>
+                setLanguage("mr")
+              }
+            >
+              मराठी
+            </button>
+
+          </div>
+
           <div className="modern-header-date">
 
             <span>
-              TODAY
+              {language === "mr"
+                ? "आज"
+                : "TODAY"}
             </span>
 
             <strong>
@@ -498,7 +697,26 @@ function Dashboard({
               </strong>
 
               <span>
-                {user.role}
+                {language === "mr"
+                  ? (
+                      user.role ===
+                      "ADMIN"
+                        ? "प्रशासक"
+                        : user.role ===
+                          "DY_DIRECTOR"
+                        ? "उपसंचालक"
+                        : user.role ===
+                          "SUPERINTENDENT"
+                        ? "अधीक्षक"
+                        : user.role ===
+                          "WELFARE_ORGANISER"
+                        ? "कल्याण संघटक"
+                        : user.role ===
+                          "OLC_REST_HOUSE_MANAGER"
+                        ? "OLC विश्रामगृह व्यवस्थापक"
+                        : "रिसेप्शनिस्ट"
+                    )
+                  : user.role}
               </span>
 
             </div>
@@ -510,7 +728,7 @@ function Dashboard({
             className="modern-logout"
             onClick={onLogout}
           >
-            Logout
+            {t("common", "logout")}
           </button>
 
         </div>
@@ -532,15 +750,21 @@ function Dashboard({
           <div>
 
             <span className="dashboard-eyebrow">
-              WELCOME BACK
+              {language === "mr"
+                ? "पुन्हा स्वागत आहे"
+                : "WELCOME BACK"}
             </span>
 
             <h2>
-              {information.title}
+              {language === "mr"
+                ? information.titleMr
+                : information.title}
             </h2>
 
             <p>
-              {information.subtitle}
+              {language === "mr"
+                ? information.subtitleMr
+                : information.subtitle}
             </p>
 
           </div>
@@ -552,7 +776,9 @@ function Dashboard({
             </strong>
 
             <span>
-              ESM Rest House Management Portal
+              {language === "mr"
+                ? "ESM विश्रामगृह व्यवस्थापन पोर्टल"
+                : "ESM Rest House Management Portal"}
             </span>
 
           </div>
@@ -570,11 +796,15 @@ function Dashboard({
             <span className="dashboard-live-dot" />
 
             <strong>
-              Live System Data
+              {language === "mr"
+                ? "थेट प्रणाली माहिती"
+                : "Live System Data"}
             </strong>
 
             <span>
-              Connected to PostgreSQL
+              {language === "mr"
+                ? "PostgreSQL शी जोडलेले"
+                : "Connected to PostgreSQL"}
             </span>
 
           </div>
@@ -582,17 +812,30 @@ function Dashboard({
           <div className="dashboard-live-right">
 
             {loading
-              ? "Loading..."
+              ? language === "mr"
+                ? "लोड होत आहे..."
+                : "Loading..."
               : lastUpdated
-                ? `Updated ${lastUpdated.toLocaleTimeString(
-                    "en-IN",
-                    {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                      second: "2-digit",
-                    }
-                  )}`
-                : "Waiting for update"}
+                ? language === "mr"
+                  ? `अपडेट: ${lastUpdated.toLocaleTimeString(
+                      "mr-IN",
+                      {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit",
+                      }
+                    )}`
+                  : `Updated ${lastUpdated.toLocaleTimeString(
+                      "en-IN",
+                      {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit",
+                      }
+                    )}`
+                : language === "mr"
+                  ? "अपडेटची प्रतीक्षा"
+                  : "Waiting for update"}
 
             <button
               type="button"
@@ -602,7 +845,7 @@ function Dashboard({
               disabled={loading}
               className="dashboard-refresh-button"
             >
-              Refresh
+              {t("common", "refresh")}
             </button>
 
           </div>
@@ -618,7 +861,9 @@ function Dashboard({
           <div className="dashboard-error">
 
             <strong>
-              Dashboard data unavailable
+              {language === "mr"
+                ? "डॅशबोर्ड माहिती उपलब्ध नाही"
+                : "Dashboard data unavailable"}
             </strong>
 
             <span>
@@ -631,7 +876,9 @@ function Dashboard({
                 loadDashboardData
               }
             >
-              Try Again
+              {language === "mr"
+                ? "पुन्हा प्रयत्न करा"
+                : "Try Again"}
             </button>
 
           </div>
@@ -655,13 +902,17 @@ function Dashboard({
               </div>
 
               <span className="dashboard-stat-badge">
-                LIVE
+                {language === "mr"
+                  ? "थेट"
+                  : "LIVE"}
               </span>
 
             </div>
 
             <span className="dashboard-stat-label">
-              Total Bookings
+              {language === "mr"
+                ? "एकूण बुकिंग"
+                : "Total Bookings"}
             </span>
 
             <strong className="dashboard-stat-value">
@@ -671,73 +922,51 @@ function Dashboard({
             </strong>
 
             <span className="dashboard-stat-description">
-              All bookings recorded in the system
+              {language === "mr"
+                ? "प्रणालीमध्ये नोंदवलेली सर्व बुकिंग"
+                : "All bookings recorded in the system"}
             </span>
 
           </article>
-
-          {/* AVAILABLE BEDS */}
 
           <article className="dashboard-stat-card stat-green">
-
             <div className="dashboard-stat-top">
-
-              <div className="dashboard-stat-icon">
-                A
-              </div>
-
+              <div className="dashboard-stat-icon">AB</div>
               <span className="dashboard-stat-badge">
-                AVAILABLE
+                {language === "mr" ? "थेट" : "LIVE"}
               </span>
-
             </div>
-
             <span className="dashboard-stat-label">
-              Available Beds
+              {language === "mr" ? "उपलब्ध बेड" : "Available Beds"}
             </span>
-
             <strong className="dashboard-stat-value">
-              {loading
-                ? "—"
-                : summary.availableBeds}
+              {loading ? "—" : summary.availableBeds}
             </strong>
-
             <span className="dashboard-stat-description">
-              Ready for guest allotment
+              {language === "mr"
+                ? "सध्या उपलब्ध असलेले बेड"
+                : "Beds currently available"}
             </span>
-
           </article>
 
-          {/* OCCUPIED BEDS */}
-
           <article className="dashboard-stat-card stat-red">
-
             <div className="dashboard-stat-top">
-
-              <div className="dashboard-stat-icon">
-                O
-              </div>
-
+              <div className="dashboard-stat-icon">OB</div>
               <span className="dashboard-stat-badge">
-                OCCUPIED
+                {language === "mr" ? "थेट" : "LIVE"}
               </span>
-
             </div>
-
             <span className="dashboard-stat-label">
-              Occupied Beds
+              {language === "mr" ? "व्यापलेले बेड" : "Occupied Beds"}
             </span>
-
             <strong className="dashboard-stat-value">
-              {loading
-                ? "—"
-                : summary.occupiedBeds}
+              {loading ? "—" : summary.occupiedBeds}
             </strong>
-
             <span className="dashboard-stat-description">
-              Currently allotted to guests
+              {language === "mr"
+                ? "सध्या अतिथींनी वापरलेले बेड"
+                : "Beds currently occupied by guests"}
             </span>
-
           </article>
 
           {/* TODAY CHECK-IN */}
@@ -751,13 +980,17 @@ function Dashboard({
               </div>
 
               <span className="dashboard-stat-badge">
-                TODAY
+                {language === "mr"
+                  ? "आज"
+                  : "TODAY"}
               </span>
 
             </div>
 
             <span className="dashboard-stat-label">
-              Today's Check-ins
+              {language === "mr"
+                ? "आजचे चेक-इन"
+                : "Today's Check-ins"}
             </span>
 
             <strong className="dashboard-stat-value">
@@ -767,12 +1000,74 @@ function Dashboard({
             </strong>
 
             <span className="dashboard-stat-description">
-              Guests checked in today
+              {language === "mr"
+                ? "आज चेक-इन केलेले अतिथी"
+                : "Guests checked in today"}
             </span>
 
           </article>
 
         </section>
+
+        {user.role === "ADMIN" && (
+          <section className="booking-card">
+            <div className="booking-section-title">
+              <span>₹</span>
+              <div>
+                <h2>
+                  {language === "mr"
+                    ? "आजचे आणि मासिक संकलन"
+                    : "Daily and Monthly Collections"}
+                </h2>
+                <p>
+                  {language === "mr"
+                    ? "फक्त यशस्वी नोंदवलेली पेमेंट्स"
+                    : "Successful recorded payments only"}
+                </p>
+              </div>
+            </div>
+            {collectionError ? (
+              <p role="alert" className="dashboard-error">
+                {collectionError}
+              </p>
+            ) : collections ? (
+              <div className="dashboard-stat-grid">
+                <article className="dashboard-stat-card stat-green">
+                  <span className="dashboard-stat-label">Today's Cash</span>
+                  <strong className="dashboard-stat-value">
+                    {formatCurrency(collections.todayCash)}
+                  </strong>
+                  <span className="dashboard-stat-description">
+                    UPI / QR: {formatCurrency(collections.todayUpiQr)}
+                  </span>
+                  <span className="dashboard-stat-description">
+                    Online / cheque: {formatCurrency(collections.todayOther)}
+                  </span>
+                  <span className="dashboard-stat-description">
+                    Total today: {formatCurrency(collections.todayTotal)}
+                  </span>
+                </article>
+                <article className="dashboard-stat-card stat-blue">
+                  <span className="dashboard-stat-label">This Month</span>
+                  <strong className="dashboard-stat-value">
+                    {formatCurrency(collections.monthTotal)}
+                  </strong>
+                  <span className="dashboard-stat-description">
+                    Cash: {formatCurrency(collections.monthCash)}
+                  </span>
+                  <span className="dashboard-stat-description">
+                    UPI / QR: {formatCurrency(collections.monthUpiQr)}
+                  </span>
+                  <span className="dashboard-stat-description">
+                    Online / cheque: {formatCurrency(collections.monthOther)}
+                  </span>
+                </article>
+              </div>
+            ) : (
+              <p>{loading ? "Loading collections…" : "No collection data."}</p>
+            )}
+          </section>
+        )}
 
         {/* ============================================================
             HOUSEKEEPING STATUS
@@ -785,7 +1080,9 @@ function Dashboard({
             <div>
 
               <span>
-                HOUSEKEEPING
+                {language === "mr"
+                  ? "हाऊसकीपिंग"
+                  : "HOUSEKEEPING"}
               </span>
 
               <strong>
@@ -795,13 +1092,17 @@ function Dashboard({
               </strong>
 
               <p>
-                Beds waiting for housekeeping
+                {language === "mr"
+                  ? "हाऊसकीपिंगची प्रतीक्षा करणाऱ्या खोल्या / बेड"
+                  : "Rooms / beds waiting for housekeeping"}
               </p>
 
             </div>
 
             <span className="attention-indicator">
-              NEEDS CLEANING
+              {language === "mr"
+                ? "साफसफाई आवश्यक"
+                : "NEEDS CLEANING"}
             </span>
 
           </div>
@@ -811,7 +1112,9 @@ function Dashboard({
             <div>
 
               <span>
-                CLEANING IN PROGRESS
+                {language === "mr"
+                  ? "साफसफाई सुरू"
+                  : "CLEANING IN PROGRESS"}
               </span>
 
               <strong>
@@ -821,13 +1124,17 @@ function Dashboard({
               </strong>
 
               <p>
-                Beds currently being cleaned
+                {language === "mr"
+                  ? "सध्या साफ होत असलेल्या खोल्या / बेड"
+                  : "Rooms / beds currently being cleaned"}
               </p>
 
             </div>
 
             <span className="attention-indicator">
-              IN PROGRESS
+              {language === "mr"
+                ? "प्रगतीपथावर"
+                : "IN PROGRESS"}
             </span>
 
           </div>
@@ -849,15 +1156,21 @@ function Dashboard({
               <div>
 
                 <span className="dashboard-eyebrow">
-                  OPERATIONS
+                  {language === "mr"
+                    ? "ऑपरेशन्स"
+                    : "OPERATIONS"}
                 </span>
 
                 <h3>
-                  Quick Actions
+                  {language === "mr"
+                    ? "जलद कृती"
+                    : "Quick Actions"}
                 </h3>
 
                 <p>
-                  Frequently used management functions
+                  {language === "mr"
+                    ? "वारंवार वापरली जाणारी व्यवस्थापन कार्ये"
+                    : "Frequently used management functions"}
                 </p>
 
               </div>
@@ -866,37 +1179,60 @@ function Dashboard({
 
             <div className="dashboard-action-grid">
 
-              {/* NEW BOOKING */}
-
               <button
                 type="button"
-                className="dashboard-action action-blue"
-                onClick={
-                  onNewBooking
-                }
+                className="dashboard-action action-cyan"
+                onClick={onDailyReport}
               >
-
-                <span className="action-symbol">
-                  +
-                </span>
-
+                <span className="action-symbol">DR</span>
                 <span>
-
                   <strong>
-                    New Booking
+                    {language === "mr" ? "दैनिक अहवाल पहा" : "View Daily Report"}
                   </strong>
-
                   <small>
-                    Create a new guest booking
+                    {language === "mr"
+                      ? "खोलीनुसार अतिथी आणि रिक्तता"
+                      : "Room-wise occupancy and vacancies"}
                   </small>
-
                 </span>
-
-                <b>
-                  →
-                </b>
-
+                <b>→</b>
               </button>
+
+              {/* NEW BOOKING */}
+
+              {canCreateBookings && (
+                <button
+                  type="button"
+                  className="dashboard-action action-blue"
+                  onClick={
+                    onNewBooking
+                  }
+                >
+
+                  <span className="action-symbol">
+                    +
+                  </span>
+
+                  <span>
+
+                    <strong>
+                      {t("dashboard", "newBooking")}
+                    </strong>
+
+                    <small>
+                      {language === "mr"
+                        ? "नवीन अतिथी बुकिंग तयार करा"
+                        : "Create a new guest booking"}
+                    </small>
+
+                  </span>
+
+                  <b>
+                    →
+                  </b>
+
+                </button>
+              )}
 
               {/* AVAILABILITY */}
 
@@ -915,11 +1251,13 @@ function Dashboard({
                 <span>
 
                   <strong>
-                    Availability
+                    {t("dashboard", "availability")}
                   </strong>
 
                   <small>
-                    View rooms and beds
+                    {language === "mr"
+                      ? "खोल्या आणि बेड पहा"
+                      : "View rooms and beds"}
                   </small>
 
                 </span>
@@ -930,10 +1268,28 @@ function Dashboard({
 
               </button>
 
-              {/* =====================================================
-                  PENDING APPROVALS
-                  AUTHORITY ROLES ONLY
-              ===================================================== */}
+              {user.role === "ADMIN" && (
+                <button
+                  type="button"
+                  className="dashboard-action action-gold"
+                  onClick={onCustomizeRates}
+                >
+                  <span className="action-symbol">₹</span>
+                  <span>
+                    <strong>
+                      {language === "mr" ? "दर सानुकूलित करा" : "Customize Rates"}
+                    </strong>
+                    <small>
+                      {language === "mr"
+                        ? "खोलीची क्षमता आणि दर व्यवस्थापित करा"
+                        : "Manage room capacities and approved rates"}
+                    </small>
+                  </span>
+                  <b>→</b>
+                </button>
+              )}
+
+              {/* PENDING APPROVALS */}
 
               {canApproveBookings && (
 
@@ -952,11 +1308,13 @@ function Dashboard({
                   <span>
 
                     <strong>
-                      Pending Approvals
+                      {t("dashboard", "approvals")}
                     </strong>
 
                     <small>
-                      Review room booking approvals
+                      {language === "mr"
+                        ? "खोली बुकिंगच्या मंजुरी तपासा"
+                        : "Review room booking approvals"}
                     </small>
 
                   </span>
@@ -989,11 +1347,15 @@ function Dashboard({
                   <span>
 
                     <strong>
-                      Authority Rooms
+                      {language === "mr"
+                        ? "अधिकारी कक्ष"
+                        : "Authority Rooms"}
                     </strong>
 
                     <small>
-                      Manage authority room access
+                      {language === "mr"
+                        ? "अधिकारी कक्ष प्रवेश व्यवस्थापित करा"
+                        : "Manage authority room access"}
                     </small>
 
                   </span>
@@ -1023,11 +1385,13 @@ function Dashboard({
                 <span>
 
                   <strong>
-                    Check-In
+                    {t("dashboard", "checkIn")}
                   </strong>
 
                   <small>
-                    Register arriving guests
+                    {language === "mr"
+                      ? "येणाऱ्या अतिथींची नोंदणी करा"
+                      : "Register arriving guests"}
                   </small>
 
                 </span>
@@ -1055,11 +1419,13 @@ function Dashboard({
                 <span>
 
                   <strong>
-                    Check-Out
+                    {t("dashboard", "checkOut")}
                   </strong>
 
                   <small>
-                    Complete guest departure
+                    {language === "mr"
+                      ? "अतिथींचे प्रस्थान पूर्ण करा"
+                      : "Complete guest departure"}
                   </small>
 
                 </span>
@@ -1090,11 +1456,54 @@ function Dashboard({
                   <span>
 
                     <strong>
-                      Housekeeping
+                      {t("dashboard", "housekeeping")}
                     </strong>
 
                     <small>
-                      Manage cleaning tasks
+                      {language === "mr"
+                        ? "साफसफाईची कामे व्यवस्थापित करा"
+                        : "Manage cleaning tasks"}
+                    </small>
+
+                  </span>
+
+                  <b>
+                    →
+                  </b>
+
+                </button>
+
+              )}
+
+              {/* LOST & FOUND */}
+
+              {user.role ===
+                "RECEPTIONIST" && (
+
+                <button
+                  type="button"
+                  className="dashboard-action action-orange"
+                  onClick={
+                    onLostAndFound
+                  }
+                >
+
+                  <span className="action-symbol">
+                    LF
+                  </span>
+
+                  <span>
+
+                    <strong>
+                      {language === "mr"
+                        ? "हरवलेली वस्तू"
+                        : "Lost & Found"}
+                    </strong>
+
+                    <small>
+                      {language === "mr"
+                        ? "सापडलेल्या वस्तूंची नोंद व परतावा व्यवस्थापित करा"
+                        : "Record and return found guest items"}
                     </small>
 
                   </span>
@@ -1111,6 +1520,99 @@ function Dashboard({
 
           </section>
 
+          {user.role === "ADMIN" && (
+            <section className="dashboard-section-card dashboard-payment-config">
+              <div className="dashboard-section-header">
+                <div>
+                  <span className="dashboard-eyebrow">
+                    {language === "mr" ? "पेमेंट" : "PAYMENTS"}
+                  </span>
+                  <h3>
+                    {language === "mr"
+                      ? "UPI पेमेंट तपशील"
+                      : "UPI Payment Setup"}
+                  </h3>
+                  <p>
+                    {language === "mr"
+                      ? "ऑनलाइन पेमेंट QR साठी वापरला जाणारा UPI आयडी आणि प्राप्तकर्त्याचे नाव सेट करा."
+                      : "Set the UPI ID and payee name used for online payment QR codes."}
+                  </p>
+                </div>
+              </div>
+              <div className="dashboard-payment-config-body">
+                {upiConfigLoading ? (
+                  <p role="status">
+                    {language === "mr"
+                      ? "UPI तपशील लोड होत आहेत..."
+                      : "Loading UPI configuration..."}
+                  </p>
+                ) : (
+                  <>
+                    <div className="dashboard-payment-config-fields">
+                      <label className="dashboard-payment-field">
+                        <span>{language === "mr" ? "UPI आयडी" : "UPI ID"}</span>
+                        <input
+                          type="text"
+                          autoComplete="off"
+                          placeholder="name@bank"
+                          value={upiId}
+                          onChange={(event) => {
+                            setUpiId(event.target.value);
+                            setUpiConfigSaved(false);
+                            setUpiConfigMessage("");
+                          }}
+                        />
+                      </label>
+                      <label className="dashboard-payment-field">
+                        <span>
+                          {language === "mr" ? "प्राप्तकर्त्याचे नाव" : "Payee name"}
+                        </span>
+                        <input
+                          type="text"
+                          autoComplete="off"
+                          value={upiPayee}
+                          onChange={(event) => {
+                            setUpiPayee(event.target.value);
+                            setUpiConfigSaved(false);
+                            setUpiConfigMessage("");
+                          }}
+                        />
+                      </label>
+                    </div>
+                    <div className="dashboard-payment-config-footer">
+                      <button
+                        type="button"
+                        className="dashboard-payment-save"
+                        onClick={() => void saveUpiConfiguration()}
+                        disabled={upiConfigSaving}
+                      >
+                        {upiConfigSaving
+                          ? language === "mr"
+                            ? "जतन होत आहे..."
+                            : "Saving..."
+                          : language === "mr"
+                            ? "UPI तपशील जतन करा"
+                            : "Save UPI details"}
+                      </button>
+                      {upiConfigMessage && (
+                        <p
+                          role="status"
+                          className={
+                            upiConfigSaved
+                              ? "dashboard-payment-message success"
+                              : "dashboard-payment-message"
+                          }
+                        >
+                          {upiConfigMessage}
+                        </p>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            </section>
+          )}
+
           {/* ROOM STATUS */}
 
           <section className="dashboard-section-card">
@@ -1120,15 +1622,21 @@ function Dashboard({
               <div>
 
                 <span className="dashboard-eyebrow">
-                  LIVE OVERVIEW
+                  {language === "mr"
+                    ? "थेट आढावा"
+                    : "LIVE OVERVIEW"}
                 </span>
 
                 <h3>
-                  Room Inventory
+                  {language === "mr"
+                    ? "खोलींची माहिती"
+                    : "Room Inventory"}
                 </h3>
 
                 <p>
-                  Current accommodation structure
+                  {language === "mr"
+                    ? "सध्याची निवास व्यवस्था"
+                    : "Current accommodation structure"}
                 </p>
 
               </div>
@@ -1148,11 +1656,15 @@ function Dashboard({
                   <div>
 
                     <strong>
-                      AC Rooms
+                      {language === "mr"
+                        ? "वातानुकूलित खोल्या"
+                        : "AC Rooms"}
                     </strong>
 
                     <small>
-                      Premium accommodation
+                      {language === "mr"
+                        ? "प्रीमियम निवास"
+                        : "Premium accommodation"}
                     </small>
 
                   </div>
@@ -1178,11 +1690,15 @@ function Dashboard({
                   <div>
 
                     <strong>
-                      Non-AC Rooms
+                      {language === "mr"
+                        ? "विनावातानुकूलित खोल्या"
+                        : "Non-AC Rooms"}
                     </strong>
 
                     <small>
-                      Standard accommodation
+                      {language === "mr"
+                        ? "सामान्य निवास"
+                        : "Standard accommodation"}
                     </small>
 
                   </div>
@@ -1208,11 +1724,15 @@ function Dashboard({
                   <div>
 
                     <strong>
-                      Dormitories
+                      {language === "mr"
+                        ? "वसतिगृहे"
+                        : "Dormitories"}
                     </strong>
 
                     <small>
-                      Shared accommodation
+                      {language === "mr"
+                        ? "सामायिक निवास"
+                        : "Shared accommodation"}
                     </small>
 
                   </div>
@@ -1238,11 +1758,15 @@ function Dashboard({
                   <div>
 
                     <strong>
-                      Hall
+                      {language === "mr"
+                        ? "सभागृह"
+                        : "Hall"}
                     </strong>
 
                     <small>
-                      Common accommodation
+                      {language === "mr"
+                        ? "सामायिक निवास"
+                        : "Common accommodation"}
                     </small>
 
                   </div>
@@ -1274,42 +1798,57 @@ function Dashboard({
             <div>
 
               <span className="dashboard-eyebrow">
-                ACTIVITY
+                {language === "mr"
+                  ? "क्रियाकलाप"
+                  : "ACTIVITY"}
               </span>
 
               <h3>
-                Recent Bookings
+                {language === "mr"
+                  ? "अलीकडील बुकिंग"
+                  : "Recent Bookings"}
               </h3>
 
               <p>
-                Latest booking activity from PostgreSQL
+                {language === "mr"
+                  ? "PostgreSQL मधील अलीकडील बुकिंग माहिती"
+                  : "Latest booking activity from PostgreSQL"}
               </p>
 
             </div>
 
-            <button
-              type="button"
-              className="dashboard-new-booking-button"
-              onClick={
-                onNewBooking
-              }
-            >
-              + New Booking
-            </button>
+            {canCreateBookings && (
+              <button
+                type="button"
+                className="dashboard-new-booking-button"
+                onClick={
+                  onNewBooking
+                }
+              >
+                +{" "}
+                {language === "mr"
+                  ? "नवीन बुकिंग"
+                  : "New Booking"}
+              </button>
+            )}
 
           </div>
 
           {loading ? (
 
             <div className="dashboard-table-message">
-              Loading live booking activity...
+              {language === "mr"
+                ? "थेट बुकिंग माहिती लोड होत आहे..."
+                : "Loading live booking activity..."}
             </div>
 
           ) : recentBookings.length ===
             0 ? (
 
             <div className="dashboard-table-message">
-              No bookings have been recorded yet.
+              {language === "mr"
+                ? "अद्याप कोणतीही बुकिंग नोंदवलेली नाही."
+                : "No bookings have been recorded yet."}
             </div>
 
           ) : (
@@ -1319,27 +1858,39 @@ function Dashboard({
               <div className="dashboard-booking-row dashboard-booking-header">
 
                 <span>
-                  BOOKING ID
+                  {language === "mr"
+                    ? "बुकिंग क्रमांक"
+                    : "BOOKING ID"}
                 </span>
 
                 <span>
-                  GUEST
+                  {language === "mr"
+                    ? "अतिथी"
+                    : "GUEST"}
                 </span>
 
                 <span>
-                  ROOM
+                  {language === "mr"
+                    ? "खोली"
+                    : "ROOM"}
                 </span>
 
                 <span>
-                  TYPE
+                  {language === "mr"
+                    ? "प्रकार"
+                    : "TYPE"}
                 </span>
 
                 <span>
-                  CHECK-IN
+                  {language === "mr"
+                    ? "चेक-इन"
+                    : "CHECK-IN"}
                 </span>
 
                 <span>
-                  STATUS
+                  {language === "mr"
+                    ? "स्थिती"
+                    : "STATUS"}
                 </span>
 
               </div>
@@ -1379,7 +1930,15 @@ function Dashboard({
 
                       <span className="booking-type">
                         {
-                          booking.booking_type
+                          language === "mr"
+                            ? booking.booking_type ===
+                              "CURRENT"
+                              ? "वर्तमान"
+                              : booking.booking_type ===
+                                "ADVANCE"
+                              ? "आगाऊ"
+                              : booking.booking_type
+                            : booking.booking_type
                         }
                       </span>
 
@@ -1402,6 +1961,51 @@ function Dashboard({
                             status.label
                           }
                         </span>
+
+                        {booking.resume_step && (
+                          <div className="dashboard-resume-action">
+                            <small>
+                              {booking.resume_step === "PAYMENT"
+                                ? language === "mr"
+                                  ? "मंजूर — पेमेंट सुरू ठेवा"
+                                  : "Approved — Continue to Payment"
+                                : language === "mr"
+                                ? `अपूर्ण — पायरी ${
+                                    booking.resume_step === "AVAILABILITY"
+                                      ? 1
+                                      : booking.resume_step === "GUEST_TYPE"
+                                        ? 2
+                                        : booking.resume_step === "RATE"
+                                          ? 3
+                                          : 4
+                                  } पासून पुढे जा`
+                                : `Incomplete — Continue from Step ${
+                                    booking.resume_step === "AVAILABILITY"
+                                      ? 1
+                                      : booking.resume_step === "GUEST_TYPE"
+                                        ? 2
+                                        : booking.resume_step === "RATE"
+                                          ? 3
+                                          : 4
+                                  }`}
+                            </small>
+                            <button
+                              type="button"
+                              className="dashboard-continue-booking"
+                              onClick={() =>
+                                onResumeBooking(booking.id)
+                              }
+                            >
+                              {booking.resume_step === "PAYMENT"
+                                ? language === "mr"
+                                  ? "पेमेंट सुरू ठेवा"
+                                  : "Continue to Payment"
+                                : language === "mr"
+                                ? "बुकिंग पुढे सुरू ठेवा"
+                                : "Continue Booking"}
+                            </button>
+                          </div>
+                        )}
 
                       </span>
 
@@ -1426,15 +2030,21 @@ function Dashboard({
           <div>
 
             <span className="dashboard-eyebrow">
-              ADMINISTRATION
+              {language === "mr"
+                ? "प्रशासन"
+                : "ADMINISTRATION"}
             </span>
 
             <h3>
-              User Management
+              {language === "mr"
+                ? "वापरकर्ता व्यवस्थापन"
+                : "User Management"}
             </h3>
 
             <p>
-              Manage system users and access permissions.
+              {language === "mr"
+                ? "प्रणाली वापरकर्ते आणि प्रवेश परवानग्या व्यवस्थापित करा."
+                : "Manage system users and access permissions."}
             </p>
 
           </div>
@@ -1449,13 +2059,17 @@ function Dashboard({
                 onCreateUser
               }
             >
-              Manage Users
+              {language === "mr"
+                ? "वापरकर्ते व्यवस्थापित करा"
+                : "Manage Users"}
             </button>
 
           ) : (
 
             <span className="dashboard-admin-restricted">
-              Administrator access required
+              {language === "mr"
+                ? "प्रशासक प्रवेश आवश्यक आहे"
+                : "Administrator access required"}
             </span>
 
           )}
@@ -1479,7 +2093,9 @@ function Dashboard({
         </span>
 
         <span>
-          Secure Management Portal
+          {language === "mr"
+            ? "सुरक्षित व्यवस्थापन पोर्टल"
+            : "Secure Management Portal"}
         </span>
 
         <span>

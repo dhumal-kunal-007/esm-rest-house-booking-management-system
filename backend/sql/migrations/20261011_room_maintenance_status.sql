@@ -1,0 +1,6 @@
+BEGIN;
+
+ALTER TABLE public.rooms
+    ADD COLUMN IF NOT EXISTS is_under_maintenance BOOLEAN NOT NULL DEFAULT FALSE;
+
+COMMIT;

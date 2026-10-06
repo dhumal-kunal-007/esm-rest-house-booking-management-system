@@ -4,11 +4,14 @@ import {
 } from "react";
 
 import "../App.css";
+import { apiFetch } from "../api";
 
 import type {
   User,
   UserRole,
 } from "../App";
+
+import { useLanguage } from "../i18n/LanguageContext";
 
 
 /* =================================
@@ -16,7 +19,6 @@ import type {
 ================================== */
 
 interface CreateUserProps {
-
   users: User[];
 
   onCreateUser: (
@@ -30,7 +32,6 @@ interface CreateUserProps {
   currentUserId?: string;
 
   onBack: () => void;
-
 }
 
 
@@ -42,60 +43,31 @@ const roles: {
   value: UserRole;
   label: string;
 }[] = [
-
   {
     value: "ADMIN",
     label: "Administrator",
   },
-
   {
     value: "DY_DIRECTOR",
     label: "Deputy Director",
   },
-
   {
     value: "SUPERINTENDENT",
     label: "Superintendent",
   },
-
   {
     value: "WELFARE_ORGANISER",
     label: "Welfare Organizer",
   },
-
   {
     value: "OLC_REST_HOUSE_MANAGER",
     label: "OLC Rest House Manager",
   },
-
   {
     value: "RECEPTIONIST",
     label: "Receptionist",
   },
-
 ];
-
-
-/* =================================
-   ROLE LABEL
-================================== */
-
-const getRoleLabel = (
-  role: UserRole
-): string => {
-
-  const foundRole =
-    roles.find(
-      (roleOption) =>
-        roleOption.value === role
-    );
-
-  return (
-    foundRole?.label ||
-    role
-  );
-
-};
 
 
 /* =================================
@@ -109,6 +81,11 @@ function CreateUser({
   currentUserId,
   onBack,
 }: CreateUserProps) {
+
+  const {
+    language,
+    setLanguage,
+  } = useLanguage();
 
 
   /* =================================
@@ -156,7 +133,7 @@ function CreateUser({
 
 
   /* =================================
-     LOCAL DATABASE USERS
+     DATABASE USERS
   ================================== */
 
   const [
@@ -171,106 +148,181 @@ function CreateUser({
 
 
   /* =================================
-     LOAD USERS FROM POSTGRESQL
+     CONFIRMATION MODAL
   ================================== */
 
-  const loadUsers =
-    async () => {
+  const [
+    confirmation,
+    setConfirmation,
+  ] = useState<{
+    type:
+      | "deactivate"
+      | "permanent"
+      | "success"
+      | null;
 
-      try {
+    user?: User;
 
-        setLoadingUsers(
-          true
+    message?: string;
+  }>({
+    type: null,
+  });
+
+
+  /* =================================
+     TRANSLATIONS
+  ================================== */
+
+  const tr = (
+    english: string,
+    marathi: string
+  ) =>
+    language === "mr"
+      ? marathi
+      : english;
+
+
+  const getRoleLabel = (
+    userRole: UserRole
+  ): string => {
+
+    const roleLabels: Record<
+      UserRole,
+      string
+    > = {
+
+      ADMIN:
+        tr(
+          "Administrator",
+          "प्रशासक"
+        ),
+
+      DY_DIRECTOR:
+        tr(
+          "Deputy Director",
+          "उपसंचालक"
+        ),
+
+      SUPERINTENDENT:
+        tr(
+          "Superintendent",
+          "अधीक्षक"
+        ),
+
+      WELFARE_ORGANISER:
+        tr(
+          "Welfare Organizer",
+          "कल्याण संघटक"
+        ),
+
+      OLC_REST_HOUSE_MANAGER:
+        tr(
+          "OLC Rest House Manager",
+          "OLC विश्रामगृह व्यवस्थापक"
+        ),
+
+      RECEPTIONIST:
+        tr(
+          "Receptionist",
+          "स्वागत कक्ष अधिकारी"
+        ),
+    };
+
+    return roleLabels[userRole];
+  };
+
+
+  /* =================================
+     LOAD USERS
+  ================================== */
+
+  const loadUsers = async () => {
+
+    try {
+
+      setLoadingUsers(true);
+
+      const response =
+        await apiFetch(
+          "http://localhost:5000/api/users"
         );
 
-        const response =
-          await fetch(
-            "http://localhost:5000/api/users"
-          );
+      const data =
+        await response.json();
 
+      if (!response.ok) {
 
-        const data =
-          await response.json();
-
-
-        if (!response.ok) {
-
-          throw new Error(
-            data.message ||
-            "Failed to load users."
-          );
-
-        }
-
-
-        if (
-          !Array.isArray(
-            data.users
-          )
-        ) {
-
-          throw new Error(
-            "Invalid user data received from server."
-          );
-
-        }
-
-
-        const loadedUsers:
-          User[] =
-          data.users.map(
-            (user: {
-              id: string;
-              name: string;
-              username: string;
-              role: string;
-              active: boolean;
-            }) => ({
-
-              id:
-                user.id,
-
-              name:
-                user.name,
-
-              username:
-                user.username,
-
-              role:
-                user.role as UserRole,
-
-              active:
-                user.active,
-
-            })
-          );
-
-
-        setDatabaseUsers(
-          loadedUsers
-        );
-
-
-      } catch (loadError) {
-
-        console.error(
-          "Failed to load users:",
-          loadError
-        );
-
-        setDatabaseUsers(
-          users
-        );
-
-      } finally {
-
-        setLoadingUsers(
-          false
+        throw new Error(
+          data.message ||
+          "Failed to load users."
         );
 
       }
 
-    };
+      if (
+        !Array.isArray(
+          data.users
+        )
+      ) {
+
+        throw new Error(
+          "Invalid user data received from server."
+        );
+
+      }
+
+      const loadedUsers:
+        User[] =
+        data.users.map(
+          (user: {
+            id: string;
+            name: string;
+            username: string;
+            role: string;
+            active: boolean;
+          }) => ({
+
+            id:
+              user.id,
+
+            name:
+              user.name,
+
+            username:
+              user.username,
+
+            role:
+              user.role as UserRole,
+
+            active:
+              user.active,
+
+          })
+        );
+
+
+      setDatabaseUsers(
+        loadedUsers
+      );
+
+    } catch (loadError) {
+
+      console.error(
+        "Failed to load users:",
+        loadError
+      );
+
+      setDatabaseUsers(
+        users
+      );
+
+    } finally {
+
+      setLoadingUsers(false);
+
+    }
+
+  };
 
 
   /* =================================
@@ -285,7 +337,7 @@ function CreateUser({
 
 
   /* =================================
-     KEEP DATABASE USER LIST IN SYNC
+     KEEP LIST IN SYNC
   ================================== */
 
   useEffect(() => {
@@ -328,14 +380,15 @@ function CreateUser({
     setError("");
 
 
-    /* =================================
-       VALIDATE NAME
-    ================================= */
+    /* NAME */
 
     if (!name.trim()) {
 
       setError(
-        "Please enter the full name."
+        tr(
+          "Please enter the full name.",
+          "कृपया पूर्ण नाव प्रविष्ट करा."
+        )
       );
 
       return;
@@ -343,14 +396,15 @@ function CreateUser({
     }
 
 
-    /* =================================
-       VALIDATE USERNAME
-    ================================= */
+    /* USERNAME */
 
     if (!username.trim()) {
 
       setError(
-        "Please enter a username."
+        tr(
+          "Please enter a username.",
+          "कृपया वापरकर्तानाव प्रविष्ट करा."
+        )
       );
 
       return;
@@ -358,9 +412,7 @@ function CreateUser({
     }
 
 
-    /* =================================
-       CHECK USERNAME
-    ================================= */
+    /* USERNAME DUPLICATE */
 
     const usernameExists =
       databaseUsers.some(
@@ -376,7 +428,10 @@ function CreateUser({
     if (usernameExists) {
 
       setError(
-        "This username already exists."
+        tr(
+          "This username already exists.",
+          "हे वापरकर्तानाव आधीपासून अस्तित्वात आहे."
+        )
       );
 
       return;
@@ -384,16 +439,17 @@ function CreateUser({
     }
 
 
-    /* =================================
-       PASSWORD
-    ================================= */
+    /* PASSWORD */
 
     if (
       password.length < 6
     ) {
 
       setError(
-        "Password must contain at least 6 characters."
+        tr(
+          "Password must contain at least 6 characters.",
+          "पासवर्डमध्ये किमान 6 अक्षरे असणे आवश्यक आहे."
+        )
       );
 
       return;
@@ -401,9 +457,7 @@ function CreateUser({
     }
 
 
-    /* =================================
-       PREVENT DOUBLE SUBMIT
-    ================================= */
+    /* DOUBLE SUBMIT */
 
     if (
       creatingUser
@@ -414,19 +468,13 @@ function CreateUser({
     }
 
 
-    setCreatingUser(
-      true
-    );
+    setCreatingUser(true);
 
-
-    /* =================================
-       CREATE IN POSTGRESQL
-    ================================= */
 
     try {
 
       const response =
-        await fetch(
+        await apiFetch(
           "http://localhost:5000/api/users",
           {
             method: "POST",
@@ -436,19 +484,20 @@ function CreateUser({
                 "application/json",
             },
 
-            body: JSON.stringify({
+            body:
+              JSON.stringify({
 
-              name:
-                name.trim(),
+                name:
+                  name.trim(),
 
-              username:
-                username.trim(),
+                username:
+                  username.trim(),
 
-              password,
+                password,
 
-              role,
+                role,
 
-            }),
+              }),
 
           }
         );
@@ -464,7 +513,10 @@ function CreateUser({
 
         setError(
           data.message ||
-          "Failed to create user."
+          tr(
+            "Failed to create user.",
+            "वापरकर्ता तयार करता आला नाही."
+          )
         );
 
         return;
@@ -477,17 +529,16 @@ function CreateUser({
       ) {
 
         setError(
-          "User was created, but no user data was returned."
+          tr(
+            "User was created, but no user data was returned.",
+            "वापरकर्ता तयार झाला, परंतु वापरकर्त्याची माहिती मिळाली नाही."
+          )
         );
 
         return;
 
       }
 
-
-      /* =================================
-         CREATED USER
-      ================================== */
 
       const createdUser:
         User = {
@@ -510,17 +561,12 @@ function CreateUser({
       };
 
 
-      /* =================================
-         UPDATE LIST
-      ================================== */
+      /* UPDATE LIST */
 
       setDatabaseUsers(
         (currentUsers) => [
-
           ...currentUsers,
-
           createdUser,
-
         ]
       );
 
@@ -530,9 +576,7 @@ function CreateUser({
       );
 
 
-      /* =================================
-         CLEAR FORM
-      ================================== */
+      /* CLEAR FORM */
 
       setName("");
 
@@ -547,9 +591,16 @@ function CreateUser({
       setError("");
 
 
-      window.alert(
-        `User "${createdUser.username}" has been created successfully.`
-      );
+      /* SUCCESS MODAL */
+
+      setConfirmation({
+        type: "success",
+        message:
+          tr(
+            `User "${createdUser.username}" has been created successfully.`,
+            `वापरकर्ता "${createdUser.username}" यशस्वीरित्या तयार करण्यात आला आहे.`
+          ),
+      });
 
 
     } catch (createError) {
@@ -561,14 +612,15 @@ function CreateUser({
 
 
       setError(
-        "Unable to connect to the backend. Please make sure the ESM Rest House backend is running."
+        tr(
+          "Unable to connect to the backend. Please make sure the ESM Rest House backend is running.",
+          "बॅकएंडशी कनेक्ट करता आले नाही. कृपया ESM विश्रामगृह बॅकएंड सुरू आहे याची खात्री करा."
+        )
       );
 
     } finally {
 
-      setCreatingUser(
-        false
-      );
+      setCreatingUser(false);
 
     }
 
@@ -592,7 +644,10 @@ function CreateUser({
     ) {
 
       setError(
-        "You cannot delete the currently logged-in user."
+        tr(
+          "You cannot deactivate the currently logged-in user.",
+          "सध्या लॉगिन केलेल्या वापरकर्त्याला निष्क्रिय करता येणार नाही."
+        )
       );
 
       return;
@@ -605,7 +660,10 @@ function CreateUser({
     ) {
 
       setError(
-        "This user is already inactive."
+        tr(
+          "This user is already inactive.",
+          "हा वापरकर्ता आधीच निष्क्रिय आहे."
+        )
       );
 
       return;
@@ -613,13 +671,28 @@ function CreateUser({
     }
 
 
-    const confirmed =
-      window.confirm(
-        `Are you sure you want to deactivate the user "${user.name}" (${user.username})?\n\nThe user will no longer be able to log in. Existing booking and approval history will be preserved.`
-      );
+    setConfirmation({
+      type: "deactivate",
+      user,
+    });
+
+  };
 
 
-    if (!confirmed) {
+  /* =================================
+     CONFIRM DEACTIVATION
+  ================================== */
+
+  const confirmDeactivation = () => {
+
+    const user =
+      confirmation.user;
+
+    if (!user) {
+
+      setConfirmation({
+        type: null,
+      });
 
       return;
 
@@ -646,23 +719,24 @@ function CreateUser({
         )
     );
 
+
+    setConfirmation({
+      type: null,
+    });
+
   };
 
 
   /* =================================
-     PERMANENTLY REMOVE USER
+     PERMANENT REMOVE
   ================================== */
 
-  const handlePermanentRemove = async (
+  const handlePermanentRemove = (
     user: User
   ) => {
 
     setError("");
 
-
-    /* =================================
-       ADMIN SELF-PROTECTION
-    ================================== */
 
     if (
       currentUserId &&
@@ -670,24 +744,26 @@ function CreateUser({
     ) {
 
       setError(
-        "You cannot permanently remove the currently logged-in user."
+        tr(
+          "You cannot permanently remove the currently logged-in user.",
+          "सध्या लॉगिन केलेल्या वापरकर्त्याला कायमस्वरूपी काढता येणार नाही."
+        )
       );
 
       return;
 
     }
 
-
-    /* =================================
-       ONLY INACTIVE USERS
-    ================================== */
 
     if (
       user.active
     ) {
 
       setError(
-        "Only inactive users can be permanently removed."
+        tr(
+          "Only inactive users can be permanently removed.",
+          "फक्त निष्क्रिय वापरकर्त्यांना कायमस्वरूपी काढता येते."
+        )
       );
 
       return;
@@ -695,148 +771,136 @@ function CreateUser({
     }
 
 
-    /* =================================
-       FIRST CONFIRMATION
-    ================================== */
+    setConfirmation({
+      type: "permanent",
+      user,
+    });
 
-    const confirmed =
-      window.confirm(
-        `PERMANENTLY REMOVE USER?\n\nUser: ${user.name}\nUsername: ${user.username}\nRole: ${getRoleLabel(user.role)}\n\nThis action will permanently remove the account from PostgreSQL and cannot be undone.\n\nDo you want to continue?`
-      );
+  };
 
 
-    if (!confirmed) {
+  /* =================================
+     CONFIRM PERMANENT REMOVE
+  ================================== */
 
-      return;
+  const confirmPermanentRemove =
+    async () => {
 
-    }
+      const user =
+        confirmation.user;
 
+      if (!user) {
 
-    /* =================================
-       SECOND CONFIRMATION
-    ================================== */
-
-    const finalConfirmation =
-      window.confirm(
-        `FINAL CONFIRMATION\n\nPermanently remove "${user.username}"?\n\nClick OK only if you are absolutely sure.`
-      );
-
-
-    if (!finalConfirmation) {
-
-      return;
-
-    }
-
-
-    setRemovingUserId(
-      user.id
-    );
-
-
-    /* =================================
-       BACKEND REQUEST
-    ================================== */
-
-    try {
-
-      const response =
-        await fetch(
-          `http://localhost:5000/api/users/${user.id}/permanent`,
-          {
-            method: "DELETE",
-
-            headers: {
-              "Content-Type":
-                "application/json",
-            },
-
-            body: JSON.stringify({
-              adminUserId:
-                currentUserId,
-            }),
-
-          }
-        );
-
-
-      const data =
-        await response.json();
-
-
-      /* =================================
-         SERVER ERROR
-      ================================== */
-
-      if (
-        !response.ok
-      ) {
-
-        setError(
-          data.message ||
-          "Failed to permanently remove user."
-        );
+        setConfirmation({
+          type: null,
+        });
 
         return;
 
       }
 
 
-      /* =================================
-         REMOVE FROM DISPLAY
-      ================================== */
-
-      setDatabaseUsers(
-        (currentUsers) =>
-          currentUsers.filter(
-            (currentUser) =>
-              currentUser.id !==
-              user.id
-          )
-      );
-
-
-      /* =================================
-         REMOVE FROM APP STATE
-      ================================== */
-
-      /*
-       * App.tsx currently stores its own
-       * user list. Send the deactivated
-       * user's ID through the existing
-       * callback only when appropriate.
-       *
-       * The PostgreSQL list above is the
-       * authoritative list for this page.
-       */
-
-
-      window.alert(
-        `User "${user.username}" has been permanently removed.`
-      );
-
-
-    } catch (removeError) {
-
-      console.error(
-        "Permanent user removal error:",
-        removeError
-      );
-
-
-      setError(
-        "Unable to connect to the backend. Please make sure the ESM Rest House backend is running."
-      );
-
-    } finally {
-
       setRemovingUserId(
-        null
+        user.id
       );
 
-    }
 
-  };
+      try {
+
+        const response =
+          await apiFetch(
+            `http://localhost:5000/api/users/${user.id}/permanent`,
+            {
+              method: "DELETE",
+
+              headers: {
+                "Content-Type":
+                  "application/json",
+              },
+
+              body:
+                JSON.stringify({
+                  adminUserId:
+                    currentUserId,
+                }),
+
+            }
+          );
+
+
+        const data =
+          await response.json();
+
+
+        if (
+          !response.ok
+        ) {
+
+          setError(
+            data.message ||
+            tr(
+              "Failed to permanently remove user.",
+              "वापरकर्त्याला कायमस्वरूपी काढता आले नाही."
+            )
+          );
+
+          setConfirmation({
+            type: null,
+          });
+
+          return;
+
+        }
+
+
+        setDatabaseUsers(
+          (currentUsers) =>
+            currentUsers.filter(
+              (currentUser) =>
+                currentUser.id !==
+                user.id
+            )
+        );
+
+
+        setConfirmation({
+          type: "success",
+          message:
+            tr(
+              `User "${user.username}" has been permanently removed.`,
+              `वापरकर्ता "${user.username}" कायमस्वरूपी काढून टाकण्यात आला आहे.`
+            ),
+        });
+
+
+      } catch (removeError) {
+
+        console.error(
+          "Permanent user removal error:",
+          removeError
+        );
+
+
+        setError(
+          tr(
+            "Unable to connect to the backend. Please make sure the ESM Rest House backend is running.",
+            "बॅकएंडशी कनेक्ट करता आले नाही. कृपया ESM विश्रामगृह बॅकएंड सुरू आहे याची खात्री करा."
+          )
+        );
+
+        setConfirmation({
+          type: null,
+        });
+
+      } finally {
+
+        setRemovingUserId(
+          null
+        );
+
+      }
+
+    };
 
 
   /* =================================
@@ -869,28 +933,103 @@ function CreateUser({
           <div>
 
             <span className="section-label">
-              ADMINISTRATOR
+
+              {tr(
+                "ADMINISTRATOR",
+                "प्रशासक"
+              )}
+
             </span>
 
             <h1>
-              User Management
+
+              {tr(
+                "User Management",
+                "वापरकर्ता व्यवस्थापन"
+              )}
+
             </h1>
 
             <p>
-              Create, review and deactivate
-              system user accounts.
+
+              {tr(
+                "Create, review and deactivate system user accounts.",
+                "प्रणालीतील वापरकर्ता खाती तयार करा, तपासा आणि निष्क्रिय करा."
+              )}
+
             </p>
 
           </div>
 
 
-          <button
-            type="button"
-            className="back-button"
-            onClick={onBack}
+          <div
+            style={{
+              display:
+                "flex",
+              alignItems:
+                "center",
+              gap:
+                "12px",
+            }}
           >
-            ← Back
-          </button>
+
+            {/* LANGUAGE */}
+
+            <div
+              className="language-switcher"
+              aria-label="Language selection"
+            >
+
+              <button
+                type="button"
+                className={`language-button ${
+                  language === "en"
+                    ? "active"
+                    : ""
+                }`}
+                onClick={() =>
+                  setLanguage("en")
+                }
+              >
+                English
+              </button>
+
+              <span className="language-divider">
+                |
+              </span>
+
+              <button
+                type="button"
+                className={`language-button ${
+                  language === "mr"
+                    ? "active"
+                    : ""
+                }`}
+                onClick={() =>
+                  setLanguage("mr")
+                }
+              >
+                मराठी
+              </button>
+
+            </div>
+
+
+            <button
+              type="button"
+              className="back-button"
+              onClick={onBack}
+            >
+
+              ←{" "}
+              {tr(
+                "Back",
+                "मागे"
+              )}
+
+            </button>
+
+          </div>
 
         </div>
 
@@ -926,7 +1065,12 @@ function CreateUser({
                   margin: 0,
                 }}
               >
-                System Users
+
+                {tr(
+                  "System Users",
+                  "प्रणाली वापरकर्ते"
+                )}
+
               </h2>
 
               <p
@@ -938,13 +1082,25 @@ function CreateUser({
               >
 
                 {loadingUsers
-                  ? "Loading users..."
-                  : `${displayUsers.length} user${
-                      displayUsers.length ===
-                      1
-                        ? ""
-                        : "s"
-                    } registered`}
+
+                  ? tr(
+                      "Loading users...",
+                      "वापरकर्ते लोड होत आहेत..."
+                    )
+
+                  : `${displayUsers.length} ${
+                      displayUsers.length === 1
+                        ? tr(
+                            "user registered",
+                            "वापरकर्ता नोंदणीकृत"
+                          )
+                        : tr(
+                            "users registered",
+                            "वापरकर्ते नोंदणीकृत"
+                          )
+                    }`
+
+                }
 
               </p>
 
@@ -979,13 +1135,14 @@ function CreateUser({
                 }}
               >
 
-                Loading users from
-                PostgreSQL...
+                {tr(
+                  "Loading users from PostgreSQL...",
+                  "PostgreSQL मधून वापरकर्ते लोड होत आहेत..."
+                )}
 
               </div>
 
-            ) : displayUsers.length ===
-              0 ? (
+            ) : displayUsers.length === 0 ? (
 
               <div
                 style={{
@@ -1002,7 +1159,10 @@ function CreateUser({
                 }}
               >
 
-                No users found.
+                {tr(
+                  "No users found.",
+                  "कोणतेही वापरकर्ते सापडले नाहीत."
+                )}
 
               </div>
 
@@ -1034,7 +1194,6 @@ function CreateUser({
                         "#ffffff",
                     }}
                   >
-
 
                     {/* USER */}
 
@@ -1122,8 +1281,14 @@ function CreateUser({
 
                         {
                           user.active
-                            ? "ACTIVE"
-                            : "INACTIVE"
+                            ? tr(
+                                "ACTIVE",
+                                "सक्रिय"
+                              )
+                            : tr(
+                                "INACTIVE",
+                                "निष्क्रिय"
+                              )
                         }
 
                       </span>
@@ -1178,8 +1343,16 @@ function CreateUser({
                         {
                           currentUserId ===
                           user.id
-                            ? "CURRENT USER"
-                            : "DELETE USER"
+
+                            ? tr(
+                                "CURRENT USER",
+                                "सध्याचा वापरकर्ता"
+                              )
+
+                            : tr(
+                                "DEACTIVATE",
+                                "निष्क्रिय करा"
+                              )
                         }
 
                       </button>
@@ -1223,8 +1396,16 @@ function CreateUser({
                         {
                           removingUserId ===
                           user.id
-                            ? "REMOVING..."
-                            : "PERMANENTLY REMOVE"
+
+                            ? tr(
+                                "REMOVING...",
+                                "काढून टाकत आहे..."
+                              )
+
+                            : tr(
+                                "PERMANENTLY REMOVE",
+                                "कायमस्वरूपी काढा"
+                              )
                         }
 
                       </button>
@@ -1258,11 +1439,15 @@ function CreateUser({
 
             <h2
               style={{
-                margin:
-                  0,
+                margin: 0,
               }}
             >
-              Create New User
+
+              {tr(
+                "Create New User",
+                "नवीन वापरकर्ता तयार करा"
+              )}
+
             </h2>
 
             <p
@@ -1274,8 +1459,10 @@ function CreateUser({
               }}
             >
 
-              Create an account and assign
-              the appropriate system role.
+              {tr(
+                "Create an account and assign the appropriate system role.",
+                "खाते तयार करा आणि योग्य प्रणाली भूमिका नियुक्त करा."
+              )}
 
             </p>
 
@@ -1289,19 +1476,26 @@ function CreateUser({
             }
           >
 
-
             {/* FULL NAME */}
 
             <div className="form-group">
 
               <label htmlFor="name">
-                Full Name
+
+                {tr(
+                  "Full Name",
+                  "पूर्ण नाव"
+                )}
+
               </label>
 
               <input
                 id="name"
                 type="text"
-                placeholder="Enter full name"
+                placeholder={tr(
+                  "Enter full name",
+                  "पूर्ण नाव प्रविष्ट करा"
+                )}
                 value={
                   name
                 }
@@ -1323,13 +1517,21 @@ function CreateUser({
             <div className="form-group">
 
               <label htmlFor="new-username">
-                Username
+
+                {tr(
+                  "Username",
+                  "वापरकर्तानाव"
+                )}
+
               </label>
 
               <input
                 id="new-username"
                 type="text"
-                placeholder="Create username"
+                placeholder={tr(
+                  "Create username",
+                  "वापरकर्तानाव तयार करा"
+                )}
                 value={
                   username
                 }
@@ -1351,13 +1553,21 @@ function CreateUser({
             <div className="form-group">
 
               <label htmlFor="new-password">
-                Password
+
+                {tr(
+                  "Password",
+                  "पासवर्ड"
+                )}
+
               </label>
 
               <input
                 id="new-password"
                 type="password"
-                placeholder="Create password"
+                placeholder={tr(
+                  "Create password",
+                  "पासवर्ड तयार करा"
+                )}
                 value={
                   password
                 }
@@ -1371,6 +1581,24 @@ function CreateUser({
                 required
               />
 
+              <small
+                style={{
+                  display:
+                    "block",
+                  marginTop:
+                    "6px",
+                  opacity:
+                    0.65,
+                }}
+              >
+
+                {tr(
+                  "Minimum 6 characters.",
+                  "किमान 6 अक्षरे आवश्यक आहेत."
+                )}
+
+              </small>
+
             </div>
 
 
@@ -1379,7 +1607,12 @@ function CreateUser({
             <div className="form-group">
 
               <label htmlFor="user-role">
-                Assign Role
+
+                {tr(
+                  "Assign Role",
+                  "भूमिका नियुक्त करा"
+                )}
+
               </label>
 
               <select
@@ -1398,7 +1631,12 @@ function CreateUser({
               >
 
                 <option value="">
-                  Select role
+
+                  {tr(
+                    "Select role",
+                    "भूमिका निवडा"
+                  )}
+
                 </option>
 
                 {
@@ -1417,7 +1655,9 @@ function CreateUser({
                       >
 
                         {
-                          roleOption.label
+                          getRoleLabel(
+                            roleOption.value
+                          )
                         }
 
                       </option>
@@ -1439,9 +1679,7 @@ function CreateUser({
                 className="create-user-error"
               >
 
-                {
-                  error
-                }
+                {error}
 
               </div>
 
@@ -1460,8 +1698,16 @@ function CreateUser({
 
               {
                 creatingUser
-                  ? "CREATING USER..."
-                  : "CREATE USER"
+
+                  ? tr(
+                      "CREATING USER...",
+                      "वापरकर्ता तयार होत आहे..."
+                    )
+
+                  : tr(
+                      "CREATE USER",
+                      "वापरकर्ता तयार करा"
+                    )
               }
 
             </button>
@@ -1471,6 +1717,469 @@ function CreateUser({
         </section>
 
       </div>
+
+
+      {/* =================================
+          CONFIRMATION MODAL
+      ================================== */}
+
+      {confirmation.type && (
+
+        <div
+          style={{
+            position:
+              "fixed",
+            inset:
+              0,
+            background:
+              "rgba(15, 23, 42, 0.55)",
+            display:
+              "flex",
+            alignItems:
+              "center",
+            justifyContent:
+              "center",
+            zIndex:
+              9999,
+            padding:
+              "20px",
+          }}
+          onClick={() =>
+            confirmation.type === "success"
+              ? setConfirmation({
+                  type: null,
+                })
+              : undefined
+          }
+        >
+
+          <div
+            style={{
+              width:
+                "min(520px, 100%)",
+              background:
+                "#ffffff",
+              borderRadius:
+                "18px",
+              padding:
+                "28px",
+              boxShadow:
+                "0 24px 70px rgba(15,23,42,0.25)",
+            }}
+            onClick={(event) =>
+              event.stopPropagation()
+            }
+          >
+
+            {/* SUCCESS */}
+
+            {confirmation.type === "success" && (
+
+              <>
+
+                <div
+                  style={{
+                    width:
+                      "48px",
+                    height:
+                      "48px",
+                    borderRadius:
+                      "50%",
+                    background:
+                      "#eaf7ed",
+                    color:
+                      "#26733b",
+                    display:
+                      "flex",
+                    alignItems:
+                      "center",
+                    justifyContent:
+                      "center",
+                    fontSize:
+                      "24px",
+                    fontWeight:
+                      800,
+                    marginBottom:
+                      "16px",
+                  }}
+                >
+                  ✓
+                </div>
+
+                <h2
+                  style={{
+                    margin:
+                      "0 0 10px",
+                  }}
+                >
+
+                  {tr(
+                    "Success",
+                    "यशस्वी"
+                  )}
+
+                </h2>
+
+                <p
+                  style={{
+                    margin:
+                      "0 0 24px",
+                    lineHeight:
+                      1.6,
+                  }}
+                >
+
+                  {
+                    confirmation.message
+                  }
+
+                </p>
+
+                <button
+                  type="button"
+                  className="create-user-button"
+                  onClick={() =>
+                    setConfirmation({
+                      type: null,
+                    })
+                  }
+                >
+
+                  {tr(
+                    "OK",
+                    "ठीक आहे"
+                  )}
+
+                </button>
+
+              </>
+
+            )}
+
+
+            {/* DEACTIVATE */}
+
+            {confirmation.type === "deactivate" &&
+              confirmation.user && (
+
+              <>
+
+                <h2
+                  style={{
+                    margin:
+                      "0 0 10px",
+                  }}
+                >
+
+                  {tr(
+                    "Deactivate User?",
+                    "वापरकर्ता निष्क्रिय करायचा आहे का?"
+                  )}
+
+                </h2>
+
+                <p
+                  style={{
+                    lineHeight:
+                      1.6,
+                    marginBottom:
+                      "8px",
+                  }}
+                >
+
+                  {tr(
+                    `Are you sure you want to deactivate "${confirmation.user.name}" (${confirmation.user.username})?`,
+                    `"${confirmation.user.name}" (${confirmation.user.username}) हा वापरकर्ता निष्क्रिय करायचा आहे का?`
+                  )}
+
+                </p>
+
+                <p
+                  style={{
+                    lineHeight:
+                      1.6,
+                    opacity:
+                      0.7,
+                    marginBottom:
+                      "24px",
+                  }}
+                >
+
+                  {tr(
+                    "The user will no longer be able to log in. Existing booking and approval history will be preserved.",
+                    "हा वापरकर्ता यापुढे लॉगिन करू शकणार नाही. विद्यमान बुकिंग आणि मंजुरीचा इतिहास सुरक्षित राहील."
+                  )}
+
+                </p>
+
+                <div
+                  style={{
+                    display:
+                      "flex",
+                    justifyContent:
+                      "flex-end",
+                    gap:
+                      "10px",
+                  }}
+                >
+
+                  <button
+                    type="button"
+                    className="back-button"
+                    onClick={() =>
+                      setConfirmation({
+                        type: null,
+                      })
+                    }
+                  >
+
+                    {tr(
+                      "Cancel",
+                      "रद्द करा"
+                    )}
+
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={
+                      confirmDeactivation
+                    }
+                    style={{
+                      border:
+                        "none",
+                      background:
+                        "#a12a2a",
+                      color:
+                        "#ffffff",
+                      padding:
+                        "11px 18px",
+                      borderRadius:
+                        "8px",
+                      fontWeight:
+                        700,
+                      cursor:
+                        "pointer",
+                    }}
+                  >
+
+                    {tr(
+                      "Deactivate",
+                      "निष्क्रिय करा"
+                    )}
+
+                  </button>
+
+                </div>
+
+              </>
+
+            )}
+
+
+            {/* PERMANENT REMOVE */}
+
+            {confirmation.type === "permanent" &&
+              confirmation.user && (
+
+              <>
+
+                <div
+                  style={{
+                    width:
+                      "48px",
+                    height:
+                      "48px",
+                    borderRadius:
+                      "50%",
+                    background:
+                      "#fff0f0",
+                    color:
+                      "#8f1d1d",
+                    display:
+                      "flex",
+                    alignItems:
+                      "center",
+                    justifyContent:
+                      "center",
+                    fontSize:
+                      "22px",
+                    fontWeight:
+                      800,
+                    marginBottom:
+                      "16px",
+                  }}
+                >
+                  !
+                </div>
+
+                <h2
+                  style={{
+                    margin:
+                      "0 0 10px",
+                  }}
+                >
+
+                  {tr(
+                    "Permanently Remove User?",
+                    "वापरकर्ता कायमस्वरूपी काढायचा आहे का?"
+                  )}
+
+                </h2>
+
+                <p
+                  style={{
+                    lineHeight:
+                      1.6,
+                    marginBottom:
+                      "8px",
+                  }}
+                >
+
+                  <strong>
+                    {tr(
+                      "User:",
+                      "वापरकर्ता:"
+                    )}
+                  </strong>{" "}
+
+                  {
+                    confirmation.user.name
+                  }
+
+                  <br />
+
+                  <strong>
+                    {tr(
+                      "Username:",
+                      "वापरकर्तानाव:"
+                    )}
+                  </strong>{" "}
+
+                  {
+                    confirmation.user.username
+                  }
+
+                  <br />
+
+                  <strong>
+                    {tr(
+                      "Role:",
+                      "भूमिका:"
+                    )}
+                  </strong>{" "}
+
+                  {
+                    getRoleLabel(
+                      confirmation.user.role
+                    )
+                  }
+
+                </p>
+
+                <p
+                  style={{
+                    lineHeight:
+                      1.6,
+                    color:
+                      "#8f1d1d",
+                    fontWeight:
+                      600,
+                    marginBottom:
+                      "24px",
+                  }}
+                >
+
+                  {tr(
+                    "This action will permanently remove the account from PostgreSQL and cannot be undone.",
+                    "ही कृती PostgreSQL मधून खाते कायमस्वरूपी काढून टाकेल आणि पूर्ववत करता येणार नाही."
+                  )}
+
+                </p>
+
+                <div
+                  style={{
+                    display:
+                      "flex",
+                    justifyContent:
+                      "flex-end",
+                    gap:
+                      "10px",
+                  }}
+                >
+
+                  <button
+                    type="button"
+                    className="back-button"
+                    onClick={() =>
+                      setConfirmation({
+                        type: null,
+                      })
+                    }
+                  >
+
+                    {tr(
+                      "Cancel",
+                      "रद्द करा"
+                    )}
+
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={
+                      confirmPermanentRemove
+                    }
+                    disabled={
+                      removingUserId !== null
+                    }
+                    style={{
+                      border:
+                        "none",
+                      background:
+                        "#8f1d1d",
+                      color:
+                        "#ffffff",
+                      padding:
+                        "11px 18px",
+                      borderRadius:
+                        "8px",
+                      fontWeight:
+                        700,
+                      cursor:
+                        removingUserId !== null
+                          ? "not-allowed"
+                          : "pointer",
+                    }}
+                  >
+
+                    {
+                      removingUserId
+
+                        ? tr(
+                            "Removing...",
+                            "काढून टाकत आहे..."
+                          )
+
+                        : tr(
+                            "Permanently Remove",
+                            "कायमस्वरूपी काढा"
+                          )
+                    }
+
+                  </button>
+
+                </div>
+
+              </>
+
+            )}
+
+          </div>
+
+        </div>
+
+      )}
 
     </main>
 

@@ -1,0 +1,628 @@
+import { useEffect, useState } from "react";
+import { apiFetch } from "../api";
+import { useLanguage } from "../i18n/LanguageContext";
+import "../App.css";
+
+interface RoomRateCard {
+  id: string;
+  room_number: string;
+  category_name: string;
+  total_beds: number;
+  room_capacity: number | string | null;
+  bed_capacity: number | string | null;
+  esm_room_rate: number | string | null;
+  serving_room_rate: number | string | null;
+  civilian_room_rate: number | string | null;
+  is_under_maintenance: boolean;
+}
+
+type EditableRateField =
+  | "room_capacity"
+  | "bed_capacity"
+  | "esm_room_rate"
+  | "serving_room_rate"
+  | "civilian_room_rate";
+
+type RoomGroup = "AC" | "NAC" | "DM" | "HALL" | "VIP" | "OTHER";
+
+interface CustomizeRatesProps {
+  onBack: () => void;
+}
+
+const categoryOrder: RoomGroup[] = ["AC", "NAC", "DM", "HALL", "VIP", "OTHER"];
+
+const fields: {
+  key: EditableRateField;
+  label: string;
+  min: string;
+  step: string;
+}[] = [
+  { key: "room_capacity", label: "Room capacity", min: "1", step: "1" },
+  { key: "bed_capacity", label: "Bed capacity", min: "0", step: "1" },
+  {
+    key: "esm_room_rate",
+    label: "ESM rate",
+    min: "0.01",
+    step: "0.01",
+  },
+  {
+    key: "serving_room_rate",
+    label: "Serving rate",
+    min: "0.01",
+    step: "0.01",
+  },
+  {
+    key: "civilian_room_rate",
+    label: "Civilian rate",
+    min: "0.01",
+    step: "0.01",
+  },
+];
+
+const dmRateFields = fields.filter(
+  (
+    field
+  ): field is (typeof fields)[number] & {
+    key: "esm_room_rate" | "serving_room_rate" | "civilian_room_rate";
+  } =>
+    field.key === "esm_room_rate" ||
+    field.key === "serving_room_rate" ||
+    field.key === "civilian_room_rate"
+);
+
+const getRoomGroup = (room: RoomRateCard): RoomGroup => {
+  const category = room.category_name.trim().toUpperCase().replace(/[\s-]+/g, "_");
+  const number = room.room_number.trim().toUpperCase();
+  if (category === "VIP" || category.includes("VIP") || number.startsWith("VIP")) {
+    return "VIP";
+  }
+  if (
+    category === "DORMITORY" ||
+    category === "DM" ||
+    category.includes("DORMITORY") ||
+    number.startsWith("DM")
+  ) {
+    return "DM";
+  }
+  if (category === "HALL" || number.startsWith("HALL")) return "HALL";
+  if (
+    category === "NAC" ||
+    category === "NON_AC" ||
+    category.includes("NON_AC") ||
+    number.startsWith("NAC")
+  ) {
+    return "NAC";
+  }
+  if (category === "AC" || category.startsWith("AC_") || number.startsWith("AC")) {
+    return "AC";
+  }
+  return "OTHER";
+};
+
+const sameOptionalRate = (
+  rooms: RoomRateCard[],
+  field: "esm_room_rate" | "serving_room_rate" | "civilian_room_rate"
+): boolean => {
+  if (rooms.length < 2) return true;
+  const first = rooms[0][field];
+  return rooms.every((room) => String(room[field] ?? "") === String(first ?? ""));
+};
+
+function CustomizeRates({ onBack }: CustomizeRatesProps) {
+  const { language } = useLanguage();
+  const isMarathi = language === "mr";
+  const tr = (english: string, marathi: string) =>
+    isMarathi ? marathi : english;
+
+  const [rooms, setRooms] = useState<RoomRateCard[]>([]);
+  const [dmRates, setDmRates] = useState({
+    esm_room_rate: "",
+    serving_room_rate: "",
+    civilian_room_rate: "",
+  });
+  const [dmRatesDiffer, setDmRatesDiffer] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadRates = async () => {
+      try {
+        const response = await apiFetch(
+          "http://localhost:5000/api/rooms/rate-card"
+        );
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+          throw new Error(data.message || "Unable to load room rates.");
+        }
+        if (!cancelled) {
+          const loadedRooms: RoomRateCard[] = Array.isArray(data.rooms)
+            ? data.rooms
+            : [];
+          setRooms(
+            loadedRooms.sort((a, b) =>
+              a.room_number.localeCompare(b.room_number, undefined, {
+                numeric: true,
+                sensitivity: "base",
+              })
+            )
+          );
+          const dmRooms = loadedRooms.filter((room) => getRoomGroup(room) === "DM");
+          const ratesAreConsistent =
+            sameOptionalRate(dmRooms, "esm_room_rate") &&
+            sameOptionalRate(dmRooms, "serving_room_rate") &&
+            sameOptionalRate(dmRooms, "civilian_room_rate");
+          setDmRatesDiffer(!ratesAreConsistent);
+          setDmRates({
+            esm_room_rate: ratesAreConsistent
+              ? String(dmRooms[0]?.esm_room_rate ?? "")
+              : "",
+            serving_room_rate: ratesAreConsistent
+              ? String(dmRooms[0]?.serving_room_rate ?? "")
+              : "",
+            civilian_room_rate: ratesAreConsistent
+              ? String(dmRooms[0]?.civilian_room_rate ?? "")
+              : "",
+          });
+          setError("");
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(
+            loadError instanceof Error
+              ? loadError.message
+              : "Unable to load room rates."
+          );
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    void loadRates();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const groupedRooms = categoryOrder
+    .map((group) => ({
+      group,
+      rooms: rooms.filter((room) => getRoomGroup(room) === group),
+    }))
+    .filter(({ rooms: groupRooms }) => groupRooms.length > 0);
+
+  const updateRoom = (
+    roomId: string,
+    field: EditableRateField,
+    value: string
+  ) => {
+    setRooms((current) =>
+      current.map((room) =>
+        room.id === roomId
+          ? { ...room, [field]: value === "" ? null : value }
+          : room
+      )
+    );
+    setMessage("");
+  };
+
+  const saveRoom = async (room: RoomRateCard) => {
+    const key = `room:${room.id}`;
+    setSavingKey(key);
+    setMessage("");
+    setError("");
+    try {
+      const response = await apiFetch(
+        `http://localhost:5000/api/rooms/${room.id}/rate-card`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            room_capacity: room.room_capacity,
+            bed_capacity: room.bed_capacity,
+            esm_room_rate: room.esm_room_rate,
+            serving_room_rate: room.serving_room_rate,
+            civilian_room_rate: room.civilian_room_rate,
+          }),
+        }
+      );
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Unable to save this room's settings.");
+      }
+      setMessage(
+        tr(
+          `Saved settings for ${room.room_number}.`,
+          `${room.room_number} साठी सेटिंग्ज जतन केल्या.`
+        )
+      );
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : "Unable to save room settings."
+      );
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
+  const toggleMaintenance = async (room: RoomRateCard) => {
+    const nextState = !room.is_under_maintenance;
+    const key = `maintenance:${room.id}`;
+    setSavingKey(key);
+    setMessage("");
+    setError("");
+
+    try {
+      const response = await apiFetch(
+        `http://localhost:5000/api/rooms/${room.id}/maintenance`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ is_under_maintenance: nextState }),
+        }
+      );
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Unable to update maintenance status.");
+      }
+
+      setRooms((current) =>
+        current.map((currentRoom) =>
+          currentRoom.id === room.id
+            ? { ...currentRoom, is_under_maintenance: nextState }
+            : currentRoom
+        )
+      );
+      setMessage(
+        nextState
+          ? tr(
+              `${room.room_number} is unavailable for maintenance.`,
+              `${room.room_number} देखभालीसाठी अनुपलब्ध केली आहे.`
+            )
+          : tr(
+              `${room.room_number} is available for booking again.`,
+              `${room.room_number} पुन्हा बुकिंगसाठी उपलब्ध आहे.`
+            )
+      );
+    } catch (maintenanceError) {
+      setError(
+        maintenanceError instanceof Error
+          ? maintenanceError.message
+          : "Unable to update maintenance status."
+      );
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
+  const renderMaintenanceControl = (room: RoomRateCard) => (
+    <div className="customize-rate-card-footer">
+      <span>
+        {room.is_under_maintenance
+          ? tr("Under maintenance", "देखभाल सुरू")
+          : tr("Available for booking", "बुकिंगसाठी उपलब्ध")}
+      </span>
+      <button
+        type="button"
+        className={room.is_under_maintenance ? "secondary-action" : undefined}
+        onClick={() => void toggleMaintenance(room)}
+        disabled={savingKey !== null}
+      >
+        {savingKey === `maintenance:${room.id}`
+          ? tr("Saving…", "जतन होत आहे...")
+          : room.is_under_maintenance
+            ? tr("End maintenance", "देखभाल पूर्ण")
+            : tr("Mark maintenance", "देखभाल सुरू करा")}
+      </button>
+    </div>
+  );
+
+  const saveDmRates = async () => {
+    setSavingKey("dm-rates");
+    setMessage("");
+    setError("");
+    try {
+      const response = await apiFetch(
+        "http://localhost:5000/api/rooms/rate-card/category/dormitory",
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(dmRates),
+        }
+      );
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Unable to save shared DM rates.");
+      }
+      setRooms((current) =>
+        current.map((room) =>
+          getRoomGroup(room) === "DM"
+            ? {
+                ...room,
+                esm_room_rate:
+                  dmRates.esm_room_rate || null,
+                serving_room_rate:
+                  dmRates.serving_room_rate || null,
+                civilian_room_rate: dmRates.civilian_room_rate || null,
+              }
+            : room
+        )
+      );
+      setDmRatesDiffer(false);
+      setMessage(
+        tr(
+          `Shared rates saved for ${data.updatedRooms} DM rooms.`,
+          `${data.updatedRooms} DM खोल्यांसाठी समान दर जतन केले.`
+        )
+      );
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : "Unable to save shared DM rates."
+      );
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
+  const renderRoomFields = (room: RoomRateCard) => (
+    <div className="customize-rate-fields">
+      {fields.map((field) => (
+        <label className="customize-rate-field" key={field.key}>
+          <span>{tr(field.label, field.label)}</span>
+          <span className="customize-rate-input-wrap">
+            {field.key.endsWith("_rate") && <span>₹</span>}
+            <input
+              aria-label={`${room.room_number} ${field.label}`}
+              type="number"
+              min={field.min}
+              step={field.step}
+              value={room[field.key] ?? ""}
+              onChange={(event) =>
+                updateRoom(room.id, field.key, event.target.value)
+              }
+            />
+          </span>
+        </label>
+      ))}
+    </div>
+  );
+
+  return (
+    <main className="customize-rates-screen">
+      <header className="customize-rates-header">
+        <button
+          type="button"
+          className="customize-rates-back"
+          onClick={onBack}
+        >
+          ← {tr("Dashboard", "डॅशबोर्ड")}
+        </button>
+        <div className="customize-rates-title-row">
+          <div className="customize-rates-mark" aria-hidden="true">₹</div>
+          <div>
+            <span className="customize-rates-eyebrow">
+              {tr("ADMINISTRATION", "प्रशासन")}
+            </span>
+            <h1>{tr("Customize Rates", "दर सानुकूलित करा")}</h1>
+            <p>
+              {tr(
+                "Manage approved rates and capacities. Beds are for availability tracking only and never have a separate charge.",
+                "मंजूर दर आणि क्षमता व्यवस्थापित करा. बेड फक्त उपलब्धता तपासण्यासाठी आहेत; त्यांचे वेगळे शुल्क नाही."
+              )}
+            </p>
+          </div>
+        </div>
+      </header>
+
+      <section className="customize-rates-content">
+        <div className="customize-rates-notice">
+          <span aria-hidden="true">i</span>
+          <p>
+            {tr(
+              "Only enter department-approved rates. Blank rates remain unconfigured and cannot be used for pricing.",
+              "विभागाने मंजूर केलेले दरच प्रविष्ट करा. रिकामे दर किंमत ठरवण्यासाठी वापरता येणार नाहीत."
+            )}
+          </p>
+        </div>
+
+        {error && <p className="customize-rates-error" role="alert">{error}</p>}
+        {message && <p className="customize-rates-success" role="status">{message}</p>}
+
+        {loading ? (
+          <div className="customize-rates-empty">
+            {tr("Loading room rate cards…", "खोलीचे दर कार्ड लोड होत आहेत...")}
+          </div>
+        ) : rooms.length === 0 ? (
+          <div className="customize-rates-empty">
+            <strong>{tr("No active rooms found", "सक्रिय खोल्या सापडल्या नाहीत")}</strong>
+          </div>
+        ) : (
+          <div className="customize-rate-sections">
+            {groupedRooms.map(({ group, rooms: groupRooms }) => (
+              <section className={`customize-rate-category category-${group.toLowerCase()}`} key={group}>
+                <header className="customize-rate-category-heading">
+                  <div>
+                    <span>{tr("ROOM CATEGORY", "खोलीचा प्रकार")}</span>
+                    <h2>{group}</h2>
+                  </div>
+                  <small>
+                    {group === "DM"
+                      ? tr(`${groupRooms.length} rooms · shared rates`, `${groupRooms.length} खोल्या · समान दर`)
+                      : tr(`${groupRooms.length} rooms`, `${groupRooms.length} खोल्या`)}
+                  </small>
+                </header>
+
+                {group === "DM" ? (
+                  <>
+                    <div className="customize-rate-grid">
+                      <article className="customize-rate-card customize-rate-shared-card">
+                        <div className="customize-rate-card-heading">
+                          <div className="customize-rate-room-mark" aria-hidden="true">DM</div>
+                          <div>
+                            <span>{tr("ONE RATE SET FOR EVERY DM", "सर्व DM साठी एकच दर")}</span>
+                            <h3>{tr("Shared DM rates", "सामायिक DM दर")}</h3>
+                          </div>
+                        </div>
+                        <div className="customize-rate-fields">
+                          {dmRateFields.map((field) => (
+                              <label className="customize-rate-field" key={field.key}>
+                                <span>{tr(field.label, field.label)}</span>
+                                <span className="customize-rate-input-wrap">
+                                  <span>₹</span>
+                                  <input
+                                    aria-label={`Shared DM ${field.label}`}
+                                    type="number"
+                                    min={field.min}
+                                    step={field.step}
+                                    value={dmRates[field.key]}
+                                    onChange={(event) => {
+                                      setDmRates((current) => ({
+                                        ...current,
+                                        [field.key]: event.target.value,
+                                      }));
+                                      setMessage("");
+                                    }}
+                                  />
+                                </span>
+                              </label>
+                            ))}
+                        </div>
+                        {dmRatesDiffer && (
+                          <p className="customize-rate-warning">
+                            {tr(
+                              "Existing DM rates differ. Saving these values will standardize all DM rooms.",
+                              "सध्याचे DM दर वेगवेगळे आहेत. जतन केल्यावर सर्व DM खोल्यांचे दर समान होतील."
+                            )}
+                          </p>
+                        )}
+                        <div className="customize-rate-card-footer">
+                          <span>{tr("Applies to every active DM room.", "प्रत्येक सक्रिय DM खोलीला लागू.")}</span>
+                          <button
+                            type="button"
+                            onClick={() => void saveDmRates()}
+                            disabled={savingKey !== null}
+                          >
+                            {savingKey === "dm-rates"
+                              ? tr("Saving…", "जतन होत आहे...")
+                              : tr("Save DM rates", "DM दर जतन करा")}
+                          </button>
+                        </div>
+                      </article>
+                    </div>
+
+                    <details className="customize-dm-capacities">
+                      <summary>
+                        {tr("Manage capacity for each DM room", "प्रत्येक DM खोलीची क्षमता व्यवस्थापित करा")}
+                      </summary>
+                      <div className="customize-rate-grid">
+                        {groupRooms.map((room) => (
+                          <article className="customize-rate-card customize-dm-capacity-card" key={room.id}>
+                            <div className="customize-rate-card-heading">
+                              <div className="customize-rate-room-mark" aria-hidden="true">DM</div>
+                              <div>
+                                <span>{room.category_name}</span>
+                                <h3>{room.room_number}</h3>
+                              </div>
+                              <div className="customize-rate-bed-summary">
+                                <strong>{room.total_beds}</strong>
+                                <span>{tr("physical beds", "उपलब्ध बेड")}</span>
+                              </div>
+                            </div>
+                            {renderMaintenanceControl(room)}
+                            <div className="customize-rate-fields">
+                              {fields
+                                .filter((field) => field.key.endsWith("_capacity"))
+                                .map((field) => (
+                                  <label className="customize-rate-field" key={field.key}>
+                                    <span>{tr(field.label, field.label)}</span>
+                                    <span className="customize-rate-input-wrap">
+                                      <input
+                                        aria-label={`${room.room_number} ${field.label}`}
+                                        type="number"
+                                        min={field.min}
+                                        step={field.step}
+                                        value={room[field.key] ?? ""}
+                                        onChange={(event) =>
+                                          updateRoom(room.id, field.key, event.target.value)
+                                        }
+                                      />
+                                    </span>
+                                  </label>
+                                ))}
+                            </div>
+                            <div className="customize-rate-card-footer">
+                              <span>{tr("Capacity only", "फक्त क्षमता")}</span>
+                              <button
+                                type="button"
+                                onClick={() => void saveRoom(room)}
+                                disabled={savingKey !== null}
+                              >
+                                {savingKey === `room:${room.id}`
+                                  ? tr("Saving…", "जतन होत आहे...")
+                                  : tr("Save capacity", "क्षमता जतन करा")}
+                              </button>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    </details>
+                  </>
+                ) : (
+                  <div className="customize-rate-grid">
+                    {groupRooms.map((room) => (
+                      <article className="customize-rate-card" key={room.id}>
+                        <div className="customize-rate-card-heading">
+                          <div className="customize-rate-room-mark" aria-hidden="true">
+                            {group}
+                          </div>
+                          <div>
+                            <span>{room.category_name}</span>
+                            <h3>{room.room_number}</h3>
+                          </div>
+                          <div className="customize-rate-bed-summary">
+                            <strong>{room.total_beds}</strong>
+                            <span>{tr("physical beds", "उपलब्ध बेड")}</span>
+                          </div>
+                        </div>
+                        {renderMaintenanceControl(room)}
+                        {renderRoomFields(room)}
+                        <div className="customize-rate-card-footer">
+                          <span>
+                            {room.esm_room_rate == null &&
+                            room.serving_room_rate == null &&
+                            room.civilian_room_rate == null
+                              ? tr("Rates not configured", "दर कॉन्फिगर केलेले नाहीत")
+                              : tr("Room settings", "खोलीची सेटिंग्ज")}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => void saveRoom(room)}
+                            disabled={savingKey !== null}
+                          >
+                            {savingKey === `room:${room.id}`
+                              ? tr("Saving…", "जतन होत आहे...")
+                              : tr("Save", "जतन करा")}
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
+            ))}
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}
+
+export default CustomizeRates;
