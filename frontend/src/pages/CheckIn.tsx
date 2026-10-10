@@ -115,7 +115,8 @@ function CheckIn({
   const [manualCheckInLoading, setManualCheckInLoading] =
     useState(false);
 
-  const isAdmin = userRole === "ADMIN";
+  const canPreCheckIn =
+    userRole === "ADMIN" || userRole === "RECEPTIONIST";
 
   /* =========================================
      LOAD ELIGIBLE GUESTS
@@ -513,7 +514,7 @@ Accommodation: Full Room`,
             actual_check_in_time: manualCheckInTime,
             amount: manualAmount.trim() ? Number(manualAmount) : null,
             payment_method: "CASH",
-            remarks: manualRemarks.trim() || "Manual pre-checkin entry created by admin.",
+            remarks: manualRemarks.trim() || "Manual pre-checkin entry created by authorized staff.",
           }),
         }
       );
@@ -1539,7 +1540,7 @@ Accommodation: Full Room`,
                 )}`}
           </button>
 
-          {isAdmin && (
+          {canPreCheckIn && (
             <button
               type="button"
               className="precheckin-button"
@@ -1884,7 +1885,7 @@ Accommodation: Full Room`,
                                 )}
                               </button>
 
-                              {isAdmin && (
+                              {canPreCheckIn && (
                                 <button
                                   type="button"
                                   className="precheckin-button"

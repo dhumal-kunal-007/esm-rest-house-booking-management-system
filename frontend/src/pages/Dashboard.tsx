@@ -1451,7 +1451,7 @@ function Dashboard({
 
               </button>
 
-              {user.role === "ADMIN" && (
+              {(user.role === "ADMIN" || user.role === "RECEPTIONIST") && (
                 <button
                   type="button"
                   className="dashboard-action action-gold"

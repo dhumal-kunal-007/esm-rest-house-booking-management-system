@@ -4,7 +4,6 @@ import { resolveActualCheckInTimestamp } from "../services/checkInAccounting.js"
 import {
   BOOKING_CHECK_IN_TIME,
   BOOKING_TIME_ZONE,
-  BOOKING_TURNOVER_BUFFER_HOURS,
 } from "../services/bookingSchedule.js";
 
 const router = Router();
@@ -183,6 +182,16 @@ router.post(
     req: Request,
     res: Response
   ): Promise<void> => {
+    if (
+      req.authUser?.role !== "ADMIN" &&
+      req.authUser?.role !== "RECEPTIONIST"
+    ) {
+      res.status(403).json({
+        message: "Only administrators and receptionists can record a manual pre-checkin.",
+      });
+      return;
+    }
+
     const {
       allotment_id,
       booking_id,
@@ -424,7 +433,7 @@ router.post(
           allotment_id,
           actualCheckInTimestamp,
           checked_in_by,
-          remarks ?? "Manual pre-checkin entry created by admin.",
+          remarks ?? "Manual pre-checkin entry created by authorized staff.",
         ]
       );
 
@@ -516,7 +525,7 @@ router.post(
             null,
             actual_check_in_date,
             successfulPaymentStatus,
-            remarks ? String(remarks).trim() : "Manual pre-checkin entry recorded by admin.",
+            remarks ? String(remarks).trim() : "Manual pre-checkin entry recorded by authorized staff.",
             checked_in_by,
           ]
         );
@@ -909,28 +918,7 @@ router.post(
                 OR previous_allotment.bed_id IS NULL
                 OR previous_allotment.bed_id = $4::uuid
               )
-          ) AS housekeeping_incomplete,
-          EXISTS (
-            SELECT 1
-            FROM check_outs previous_check_out
-            INNER JOIN allotments previous_allotment
-              ON previous_allotment.id =
-                previous_check_out.allotment_id
-            INNER JOIN bookings previous_booking
-              ON previous_booking.id =
-                previous_allotment.booking_id
-            WHERE previous_allotment.room_id = $3
-              AND previous_allotment.booking_id <> $5
-              AND previous_booking.expected_check_out_date <= $1::date
-              AND previous_check_out.check_out_time >
-                CURRENT_TIMESTAMP -
-                make_interval(hours => $7::integer)
-              AND (
-                $4::uuid IS NULL
-                OR previous_allotment.bed_id IS NULL
-                OR previous_allotment.bed_id = $4::uuid
-              )
-          ) AS turnover_buffer_incomplete
+          ) AS housekeeping_incomplete
         `,
         [
           booking.check_in_date,
@@ -939,7 +927,6 @@ router.post(
           allotment.bed_id,
           booking_id,
           BOOKING_TIME_ZONE,
-          BOOKING_TURNOVER_BUFFER_HOURS,
         ]
       );
 
@@ -963,14 +950,11 @@ router.post(
         return;
       }
 
-      if (
-        turnover.housekeeping_incomplete ||
-        turnover.turnover_buffer_incomplete
-      ) {
+      if (turnover.housekeeping_incomplete) {
         await client.query("ROLLBACK");
         res.status(409).json({
           message:
-            `Check-in is blocked until the previous checkout is at least ${BOOKING_TURNOVER_BUFFER_HOURS} hours old and housekeeping has cleared the accommodation.`,
+            "Check-in is blocked until housekeeping has cleared the accommodation.",
         });
         return;
       }

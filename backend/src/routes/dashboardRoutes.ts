@@ -362,6 +362,7 @@ router.get("/summary", async (req, res) => {
       } else if (category === "vip") {
         vipRooms += count;
       } else if (
+        category === "nac" ||
         category === "nonac" ||
         category === "nonairconditioned"
       ) {

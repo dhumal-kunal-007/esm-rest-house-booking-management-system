@@ -35,7 +35,6 @@ const relationshipProofOptions = [
 
 const STANDARD_CHECK_IN_TIME = "14:00";
 const STANDARD_CHECK_OUT_TIME = "12:00";
-const TURNOVER_BUFFER_HOURS = 2;
 
 /* =================================
    TYPES
@@ -2479,8 +2478,8 @@ function Booking({
           role="note"
         >
           {tr(
-            `Standard check-out is ${STANDARD_CHECK_OUT_TIME} (12:00 PM) and check-in starts at ${STANDARD_CHECK_IN_TIME} (2:00 PM). Same-day room reuse requires the previous guest to check out, a minimum ${TURNOVER_BUFFER_HOURS}-hour turnover buffer, and housekeeping clearance.`,
-            `नियमित चेक-आउट दुपारी १२:०० वाजता आणि चेक-इन दुपारी २:०० नंतर आहे. त्याच दिवशी खोली पुन्हा देण्यासाठी मागील अतिथीचा चेक-आउट, किमान ${TURNOVER_BUFFER_HOURS} तासांचा अवधी आणि हाऊसकीपिंगची मंजुरी आवश्यक आहे.`
+            `Standard check-out is ${STANDARD_CHECK_OUT_TIME} (12:00 PM) and check-in starts at ${STANDARD_CHECK_IN_TIME} (2:00 PM). Same-day room reuse is allowed after the previous guest checks out and housekeeping clears the accommodation.`,
+            `नियमित चेक-आउट दुपारी १२:०० वाजता आणि चेक-इन दुपारी २:०० नंतर आहे. मागील अतिथीने चेक-आउट केल्यानंतर आणि हाऊसकीपिंगने खोली स्वच्छ केल्यानंतर ती त्याच दिवशी पुन्हा देता येईल.`
           )}
         </p>
 
