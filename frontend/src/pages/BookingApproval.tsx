@@ -75,7 +75,11 @@ interface BookingApprovalProps {
 
   booking: BookingApprovalData;
 
+  alreadyApproved: boolean;
+
   onBack: () => void;
+
+  onContinueToPayment: () => void;
 
   onDecision: (
     decision: ApprovalDecision,
@@ -291,7 +295,9 @@ const getAuthorityLabel = (
 function BookingApproval({
   officerName,
   booking,
+  alreadyApproved,
   onBack,
+  onContinueToPayment,
   onDecision,
 }: BookingApprovalProps) {
 
@@ -1948,18 +1954,15 @@ function BookingApproval({
         }}
       >
 
-        <button
-          type="button"
-          className="secondary-action"
-          onClick={
-            onBack
-          }
-        >
-          {tr(
-            "BACK",
-            "मागे"
-          )}
-        </button>
+        {!alreadyApproved && (
+          <button
+            type="button"
+            className="secondary-action"
+            onClick={onBack}
+          >
+            {tr("BACK", "मागे")}
+          </button>
+        )}
 
 
         <div
@@ -1974,6 +1977,17 @@ function BookingApproval({
               "flex-end",
           }}
         >
+
+          {alreadyApproved ? (
+            <button
+              type="button"
+              className="continue-booking-button"
+              onClick={onContinueToPayment}
+            >
+              {tr("CONTINUE TO PAYMENT →", "पेमेंटसाठी पुढे जा →")}
+            </button>
+          ) : (
+            <>
 
           <button
             type="button"
@@ -2024,6 +2038,9 @@ function BookingApproval({
               "बुकिंग मंजूर करा →"
             )}
           </button>
+
+            </>
+          )}
 
         </div>
 

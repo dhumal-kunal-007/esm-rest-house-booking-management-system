@@ -23,6 +23,16 @@ export interface RateSelection {
   additionalOtherRelations: number;
 }
 
+export interface BedRateDetail {
+  roomName: string;
+  bedNumber: number;
+  guestName: string;
+  relationship: string;
+  guestType: GuestTypeValue;
+  dailyRate: number;
+  stayAmount: number;
+}
+
 export interface RateResult {
   accommodationRate: number;
   accommodationDays: number;
@@ -31,6 +41,7 @@ export interface RateResult {
   additionalOtherRelationAmount: number;
   additionalMemberAmount: number;
   totalAmount: number;
+  bedRateDetails?: BedRateDetail[];
 }
 
 interface RateProps {
@@ -228,8 +239,8 @@ function Rate({
         </strong>
         <p>
           {tr(
-            "Rates and room capacities are managed by Admin in Customize Rates. The final payable amount is calculated from those settings.",
-            "दर आणि खोलीची क्षमता Admin द्वारे Customize Rates मध्ये व्यवस्थापित केली जाते. देय एकूण रक्कम त्या सेटिंग्जनुसार मोजली जाते."
+            "Rates and room capacities are managed by Admin in Customize Room and Rates. The final payable amount is calculated from those settings.",
+            "दर आणि खोलीची क्षमता Admin द्वारे Customize Room and Rates मध्ये व्यवस्थापित केली जाते. देय एकूण रक्कम त्या सेटिंग्जनुसार मोजली जाते."
           )}
         </p>
       </section>

@@ -5,6 +5,7 @@ import { pool } from "../config/db.js";
 import {
     BookingPricingInputError,
     calculateBookingPricing,
+    guestTypeForDormitoryRelationship,
     roomRateColumnForGuestType,
     type AccommodationCategory,
     type GuestType,
@@ -990,6 +991,118 @@ router.post("/", parseBookingFiles, async (req, res) => {
     }
 });
 
+router.delete("/:bookingId", async (req, res) => {
+    const userId = req.authUser?.id;
+
+    if (!userId) {
+        return res.status(401).json({
+            success: false,
+            message: "Authentication is required.",
+        });
+    }
+
+    const client = await pool.connect();
+
+    try {
+        await client.query("BEGIN");
+
+        const bookingResult = await client.query(
+            `
+            SELECT id, created_by, booking_status, approval_status
+            FROM bookings
+            WHERE id = $1
+            FOR UPDATE
+            `,
+            [req.params.bookingId]
+        );
+
+        if (bookingResult.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({
+                success: false,
+                message: "Booking was not found.",
+            });
+        }
+
+        const booking = bookingResult.rows[0];
+        if (
+            booking.created_by !== userId &&
+            req.authUser?.role !== "ADMIN"
+        ) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({
+                success: false,
+                message: "Only the booking creator or an ADMIN can delete this booking.",
+            });
+        }
+
+        if (
+            booking.booking_status !== "PENDING_APPROVAL" ||
+            booking.approval_status !== "PENDING"
+        ) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({
+                success: false,
+                message: "Only incomplete or pending bookings can be deleted.",
+            });
+        }
+
+        const operationalRecords = await client.query(
+            `
+            SELECT EXISTS (
+                SELECT 1 FROM payments WHERE booking_id = $1
+            ) OR EXISTS (
+                SELECT 1 FROM allotments WHERE booking_id = $1
+            ) OR EXISTS (
+                SELECT 1 FROM booking_legacy_bill_rates WHERE booking_id = $1
+            ) AS has_operational_records
+            `,
+            [booking.id]
+        );
+
+        if (operationalRecords.rows[0].has_operational_records) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({
+                success: false,
+                message: "This booking has financial or allotment records and cannot be deleted.",
+            });
+        }
+
+        await client.query(
+            "DELETE FROM booking_acceptances WHERE booking_id = $1",
+            [booking.id]
+        );
+        await client.query(
+            "DELETE FROM booking_guests WHERE booking_id = $1",
+            [booking.id]
+        );
+        await client.query(
+            "DELETE FROM booking_service_members WHERE booking_id = $1",
+            [booking.id]
+        );
+        await client.query(
+            "DELETE FROM booking_pricing WHERE booking_id = $1",
+            [booking.id]
+        );
+        await client.query(
+            "DELETE FROM bookings WHERE id = $1",
+            [booking.id]
+        );
+
+        await client.query("COMMIT");
+        return res.json({ success: true });
+    } catch (error) {
+        await client.query("ROLLBACK");
+        console.error("Booking deletion error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Unable to delete this booking.",
+        });
+    } finally {
+        client.release();
+    }
+});
+
 router.get("/:bookingId/resume", async (req, res) => {
     const userId = req.authUser?.id;
 
@@ -1605,36 +1718,134 @@ router.post("/:bookingId/pricing", async (req, res) => {
         }
 
         const rateField = roomRateColumnForGuestType(guestType);
-        const rateResult = await client.query(
-            `
-            SELECT DISTINCT
-                r.id AS unit_id,
-                card.${rateField} AS unit_rate
-            FROM booking_acceptances ba
-            INNER JOIN rooms r
-                ON r.id = ba.room_id
-            LEFT JOIN room_rate_cards card
-                ON card.room_id = r.id
-            WHERE
-                ba.booking_id = $1
-                AND ba.acceptance_status = 'ACCEPTED'
-            ORDER BY unit_id
-            `,
-            [booking.id]
-        );
-        const unitRates = rateResult.rows.map(
-            (row: { unit_rate: string | number | null }) =>
-                row.unit_rate === null ? Number.NaN : Number(row.unit_rate)
-        );
+        let unitRates: number[];
+        let accommodationUnits = Number(accepted.room_count);
+        let dmBedRateDetails: Array<{
+            roomName: string;
+            bedNumber: number;
+            guestName: string;
+            relationship: string;
+            guestType: GuestType;
+            dailyRate: number;
+            stayAmount: number;
+        }> = [];
+
+        if (accommodationCategory === "DORMITORY") {
+            const bedRateResult = await client.query(
+                `
+                SELECT
+                    r.room_number,
+                    bd.bed_number,
+                    g.guest_name,
+                    g.relationship,
+                    card.${rateField} AS primary_rate,
+                    card.civilian_room_rate
+                FROM booking_acceptances ba
+                INNER JOIN booking_guests bg
+                    ON bg.booking_id = ba.booking_id
+                    AND bg.guest_id = ba.guest_id
+                INNER JOIN guests g
+                    ON g.id = ba.guest_id
+                INNER JOIN rooms r
+                    ON r.id = ba.room_id
+                INNER JOIN beds bd
+                    ON bd.id = ba.bed_id
+                LEFT JOIN room_rate_cards card
+                    ON card.room_id = r.id
+                WHERE
+                    ba.booking_id = $1
+                    AND ba.acceptance_status = 'ACCEPTED'
+                ORDER BY r.room_number, bd.bed_number
+                `,
+                [booking.id]
+            );
+
+            if (bedRateResult.rows.length !== acceptedGuestCount) {
+                await client.query("ROLLBACK");
+                return res.status(400).json({
+                    success: false,
+                    message: "Every Dormitory guest must have an accepted bed before pricing.",
+                });
+            }
+
+            const resolvedBedRates = bedRateResult.rows.map(
+                (row: {
+                    room_number: string;
+                    bed_number: number;
+                    guest_name: string;
+                    relationship: string | null;
+                    primary_rate: string | number | null;
+                    civilian_room_rate: string | number | null;
+                }) => {
+                    const relationship = String(row.relationship || "OTHER").toUpperCase();
+                    const occupantGuestType = guestTypeForDormitoryRelationship(
+                        relationship,
+                        guestType
+                    );
+                    const configuredRate = occupantGuestType === "CIVILIAN"
+                        ? row.civilian_room_rate
+                        : row.primary_rate;
+
+                    return {
+                        roomName: row.room_number,
+                        bedNumber: Number(row.bed_number),
+                        guestName: row.guest_name,
+                        relationship,
+                        guestType: occupantGuestType,
+                        dailyRate: configuredRate === null
+                            ? Number.NaN
+                            : Number(configuredRate),
+                    };
+                }
+            );
+
+            unitRates = resolvedBedRates.map((detail) => detail.dailyRate);
+            accommodationUnits = resolvedBedRates.length;
+            dmBedRateDetails = resolvedBedRates.map((detail) => ({
+                ...detail,
+                stayAmount: 0,
+            }));
+        } else {
+            const rateResult = await client.query(
+                `
+                SELECT DISTINCT
+                    r.id AS unit_id,
+                    card.${rateField} AS unit_rate
+                FROM booking_acceptances ba
+                INNER JOIN rooms r
+                    ON r.id = ba.room_id
+                LEFT JOIN room_rate_cards card
+                    ON card.room_id = r.id
+                WHERE
+                    ba.booking_id = $1
+                    AND ba.acceptance_status = 'ACCEPTED'
+                ORDER BY unit_id
+                `,
+                [booking.id]
+            );
+            unitRates = rateResult.rows.map(
+                (row: { unit_rate: string | number | null }) =>
+                    row.unit_rate === null ? Number.NaN : Number(row.unit_rate)
+            );
+        }
 
         const pricing = calculateBookingPricing({
             guestType,
             accommodationCategory,
             checkInDate: booking.check_in_date,
             checkOutDate: booking.check_out_date,
-            roomCount: Number(accepted.room_count),
+            roomCount: accommodationUnits,
             unitRates,
         });
+
+        if (dmBedRateDetails.length > 0) {
+            dmBedRateDetails = dmBedRateDetails.map((detail) => ({
+                ...detail,
+                stayAmount: Math.round(
+                    (detail.dailyRate * pricing.accommodationDays + Number.EPSILON) * 100
+                ) / 100,
+            }));
+        }
 
         const savedPricing = await client.query(
             `
@@ -1729,7 +1940,10 @@ router.post("/:bookingId/pricing", async (req, res) => {
             VALUES (
                 $1,
                 'BOOKING_CONFIRMATION',
-                jsonb_build_object('guest_type', $2::TEXT),
+                jsonb_build_object(
+                    'guest_type', $2::TEXT,
+                    'dm_bed_rate_details', $4::JSONB
+                ),
                 $3,
                 CURRENT_TIMESTAMP
             )
@@ -1738,18 +1952,24 @@ router.post("/:bookingId/pricing", async (req, res) => {
                 current_step = 'BOOKING_CONFIRMATION',
                 progress_data =
                     booking_workflow_progress.progress_data ||
-                    jsonb_build_object('guest_type', $2::TEXT),
+                    jsonb_build_object(
+                        'guest_type', $2::TEXT,
+                        'dm_bed_rate_details', $4::JSONB
+                    ),
                 updated_by = EXCLUDED.updated_by,
                 updated_at = CURRENT_TIMESTAMP
             `,
-            [booking.id, pricing.guestType, userId]
+            [booking.id, pricing.guestType, userId, JSON.stringify(dmBedRateDetails)]
         );
 
         await client.query("COMMIT");
 
         return res.status(200).json({
             success: true,
-            pricing: savedPricing.rows[0],
+            pricing: {
+                ...savedPricing.rows[0],
+                dmBedRateDetails,
+            },
         });
     } catch (error) {
         await client.query("ROLLBACK");

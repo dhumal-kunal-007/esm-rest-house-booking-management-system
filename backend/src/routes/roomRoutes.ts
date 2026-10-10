@@ -117,7 +117,10 @@ router.get("/capacities", async (req, res) => {
       SELECT
         r.id AS room_id,
         card.room_capacity,
-        card.bed_capacity
+        card.bed_capacity,
+        card.esm_room_rate,
+        card.serving_room_rate,
+        card.civilian_room_rate
       FROM rooms r
       LEFT JOIN room_rate_cards card
         ON card.room_id = r.id
@@ -263,6 +266,173 @@ router.put("/rate-card/category/dormitory", async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Unable to update the shared DM room rates.",
+    });
+  } finally {
+    client.release();
+  }
+});
+
+router.put("/:roomId", async (req, res) => {
+  if (req.authUser?.role !== "ADMIN") {
+    return res.status(403).json({
+      success: false,
+      message: "Only an ADMIN can update room details.",
+    });
+  }
+
+  const { roomId } = req.params;
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      roomId
+    )
+  ) {
+    return res.status(400).json({
+      success: false,
+      message: "A valid room ID is required.",
+    });
+  }
+
+  const rawRoomNumber = typeof req.body?.room_number === "string"
+    ? req.body.room_number.trim()
+    : "";
+  const rawCategoryName = typeof req.body?.category_name === "string"
+    ? req.body.category_name.trim()
+    : "";
+
+  if (!rawRoomNumber) {
+    return res.status(400).json({
+      success: false,
+      message: "Room number is required.",
+    });
+  }
+
+  const roomCategoryMap: Record<string, string> = {
+    AC: "AC",
+    NAC: "NAC",
+    NON_AC: "NAC",
+    "NON-AC": "NAC",
+    DM: "DM",
+    DORMITORY: "DM",
+    VIP: "VIP",
+    HALL: "HALL",
+    OTHER: "OTHER",
+    "AC_VIP": "VIP",
+    "ACVIP": "VIP",
+  };
+
+  const normalizedCategory =
+    roomCategoryMap[rawCategoryName.toUpperCase()] ??
+    roomCategoryMap[
+      rawCategoryName
+        .replace(/[-\s]+/g, "_")
+        .replace(/\./g, "")
+        .toUpperCase()
+    ] ??
+    "OTHER";
+
+  const bedCapacityValue = req.body?.bed_capacity;
+  const bedCapacity =
+    bedCapacityValue === undefined || bedCapacityValue === null || bedCapacityValue === ""
+      ? null
+      : Number(bedCapacityValue);
+
+  if (
+    bedCapacity !== null &&
+    (!Number.isInteger(bedCapacity) || bedCapacity < 0)
+  ) {
+    return res.status(400).json({
+      success: false,
+      message: "Bed capacity must be a non-negative integer.",
+    });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const roomResult = await client.query(
+      `
+      SELECT id, room_number, category_id
+      FROM rooms
+      WHERE id = $1 AND is_active = TRUE
+      FOR UPDATE
+      `,
+      [roomId]
+    );
+
+    if (roomResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({
+        success: false,
+        message: "Active room was not found.",
+      });
+    }
+
+    const existingCategory = await client.query(
+      `
+      SELECT id, category_name
+      FROM room_categories
+      WHERE category_name = $1
+      LIMIT 1
+      `,
+      [normalizedCategory]
+    );
+
+    const categoryResult = existingCategory.rowCount
+      ? existingCategory
+      : await client.query(
+          `
+          INSERT INTO room_categories (category_name, created_at)
+          VALUES ($1, CURRENT_TIMESTAMP)
+          RETURNING id, category_name
+          `,
+          [normalizedCategory]
+        );
+
+    const categoryId = categoryResult.rows[0].id;
+
+    const updatedRoom = await client.query(
+      `
+      UPDATE rooms
+      SET room_number = $2, category_id = $3
+      WHERE id = $1
+      RETURNING id, room_number, category_id
+      `,
+      [roomId, rawRoomNumber, categoryId]
+    );
+
+    if (bedCapacity !== null) {
+      await client.query(
+        `
+        INSERT INTO room_rate_cards (
+          room_id,
+          bed_capacity,
+          updated_by,
+          updated_at
+        )
+        VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+        ON CONFLICT (room_id)
+        DO UPDATE SET
+          bed_capacity = EXCLUDED.bed_capacity,
+          updated_by = EXCLUDED.updated_by,
+          updated_at = CURRENT_TIMESTAMP
+        `,
+        [roomId, bedCapacity, req.authUser!.id]
+      );
+    }
+
+    await client.query("COMMIT");
+    return res.json({
+      success: true,
+      room: updatedRoom.rows[0],
+      category: categoryResult.rows[0],
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Room details update error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to update room details.",
     });
   } finally {
     client.release();
@@ -538,6 +708,8 @@ router.get("/", async (req, res) => {
         r.room_status AS current_status,
         r.is_under_maintenance,
         r.is_active,
+        r.allowed_gender,
+        r.room_usage,
 
         rc.category_name,
 
@@ -558,7 +730,7 @@ router.get("/", async (req, res) => {
       INNER JOIN room_categories rc
         ON rc.id = r.category_id
 
-      INNER JOIN room_permissions rp
+        LEFT JOIN room_permissions rp
         ON rp.room_id = r.id
        AND rp.role_name = $1
 
@@ -580,6 +752,8 @@ router.get("/", async (req, res) => {
           OR r.room_status = 'STORE'
         )
         AND (
+          $1 = 'ADMIN'
+          OR
           rp.can_book = TRUE
           OR (
             $1 = 'RECEPTIONIST'

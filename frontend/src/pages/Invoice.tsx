@@ -246,6 +246,168 @@ function Invoice({
       : tr("Credit Memo", "क्रेडिट मेमो");
 
   if (generatedInvoice) {
+    const renderInvoiceCopy = (copyType: "GUEST" | "ESM") => (
+      <section
+        className={`invoice-copy invoice-copy-${copyType.toLowerCase()}`}
+        key={copyType}
+      >
+        <header className="invoice-document-header">
+          <div className="invoice-document-brandmark" aria-hidden="true">
+            ESM
+          </div>
+          <div className="invoice-document-brand">
+            <h2>ESM REST HOUSE</h2>
+            <p>{tr("ACCOMMODATION SERVICES", "निवास सेवा")}</p>
+          </div>
+          <div className="invoice-document-copy">
+            {copyType === "GUEST"
+              ? tr("GUEST COPY", "अतिथी प्रत")
+              : tr("ESM COPY", "ईएसएम प्रत")}
+          </div>
+        </header>
+
+        <div className="invoice-document-title">
+          <h1>{invoiceTypeLabel(generatedInvoice.invoiceType)}</h1>
+          <p>{tr("Accommodation Payment Receipt", "निवास पेमेंट पावती")}</p>
+        </div>
+
+        <section className="invoice-document-meta">
+          <div>
+            <span>{tr("Invoice No.", "इनव्हॉइस क्र.")}</span>
+            <strong>{generatedInvoice.invoiceNumber}</strong>
+          </div>
+          <div>
+            <span>{tr("Invoice Date", "इनव्हॉइस तारीख")}</span>
+            <strong>{formatDate(generatedInvoice.invoiceDate)}</strong>
+          </div>
+          <div>
+            <span>{tr("Booking Reference", "बुकिंग संदर्भ")}</span>
+            <strong>
+              {bookingReference ||
+                generatedInvoice.bookingReference ||
+                "—"}
+            </strong>
+          </div>
+        </section>
+
+        <section className="invoice-document-parties">
+          <div>
+            <span className="invoice-document-label">
+              {tr("RECEIVED FROM", "यांच्याकडून प्राप्त")}
+            </span>
+            <h3>{generatedInvoice.guestName}</h3>
+            <p>{printedGuestTypeLabel}</p>
+          </div>
+          <div>
+            <span className="invoice-document-label">
+              {tr("STAY PERIOD", "निवास कालावधी")}
+            </span>
+            <p>
+              <strong>{tr("Check-in:", "चेक-इन:")}</strong>{" "}
+              {formatDate(checkIn)}
+            </p>
+            <p>
+              <strong>{tr("Check-out:", "चेक-आउट:")}</strong>{" "}
+              {formatDate(checkOut)}
+            </p>
+          </div>
+        </section>
+
+        <section className="invoice-document-section">
+          <h3>{tr("ACCOMMODATION DETAILS", "निवास तपशील")}</h3>
+          <table className="invoice-document-table">
+            <thead>
+              <tr>
+                <th>{tr("Room / Bed", "खोली / बेड")}</th>
+                <th>{tr("Occupant", "अतिथी")}</th>
+                <th>{tr("Stay", "कालावधी")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {accommodations.map((item, index) => (
+                <tr key={`${item.roomName}-${item.guestName}-${index}`}>
+                  <td>
+                    {item.roomName}
+                    {item.bedNumber
+                      ? ` — ${tr("Bed", "बेड")} ${item.bedNumber}`
+                      : ` — ${tr("Whole room", "संपूर्ण खोली")}`}
+                  </td>
+                  <td>{item.guestName}</td>
+                  <td>
+                    {formatDate(checkIn)} – {formatDate(checkOut)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+
+        <section className="invoice-document-section">
+          <h3>{tr("PAYMENT SUMMARY", "पेमेंट सारांश")}</h3>
+          <table className="invoice-document-table invoice-document-amounts">
+            <tbody>
+              <tr>
+                <td>{tr("Accommodation charges", "निवास शुल्क")}</td>
+                <td>{formatCurrency(generatedInvoice.totalAmount)}</td>
+              </tr>
+              <tr className="invoice-document-paid">
+                <td>{tr("Amount received", "प्राप्त रक्कम")}</td>
+                <td>{formatCurrency(generatedInvoice.paidAmount)}</td>
+              </tr>
+              <tr className="invoice-document-balance">
+                <th>{tr("Balance payable", "देय बाकी")}</th>
+                <th>{formatCurrency(generatedInvoice.balanceAmount)}</th>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section className="invoice-document-payment">
+          <div>
+            <span>{tr("Payment Mode", "पेमेंट पद्धत")}</span>
+            <strong>{generatedInvoice.paymentMethod.replace("_", " ")}</strong>
+          </div>
+          <div>
+            <span>{tr("Payment Date", "पेमेंट तारीख")}</span>
+            <strong>{formatDate(paymentDate)}</strong>
+          </div>
+          {generatedInvoice.transactionNumber && (
+            <div>
+              <span>{tr("Transaction / Reference No.", "व्यवहार / संदर्भ क्र.")}</span>
+              <strong>{generatedInvoice.transactionNumber}</strong>
+            </div>
+          )}
+        </section>
+
+        {generatedInvoice.remarks && (
+          <section className="invoice-document-remarks">
+            <strong>{tr("Remarks:", "शेरा:")}</strong>{" "}
+            {generatedInvoice.remarks}
+          </section>
+        )}
+
+        <footer className="invoice-document-footer">
+          <p>
+            {tr(
+              "This receipt acknowledges the payment recorded against the booking shown above.",
+              "वरील बुकिंगसाठी नोंदवलेल्या पेमेंटची ही पावती आहे."
+            )}
+          </p>
+          <div className="invoice-document-signatures">
+            <div>
+              <span>{tr("Guest / Payer", "अतिथी / पैसे भरणारा")}</span>
+            </div>
+            <div>
+              <span>{tr("Authorized Signatory", "अधिकृत स्वाक्षरी")}</span>
+            </div>
+          </div>
+          <small>
+            {tr("Please retain this receipt for your records.", "कृपया ही पावती नोंदीसाठी जतन करा.")}
+          </small>
+        </footer>
+      </section>
+    );
+
     return (
       <main className="invoice-issued-screen">
         <div className="invoice-issued-toolbar">
@@ -285,158 +447,9 @@ function Invoice({
         </div>
 
         <article className="invoice-printable" aria-label="Printable invoice">
-          <header className="invoice-document-header">
-            <div className="invoice-document-brandmark" aria-hidden="true">
-              ESM
-            </div>
-            <div className="invoice-document-brand">
-              <h2>ESM REST HOUSE</h2>
-              <p>{tr("ACCOMMODATION SERVICES", "निवास सेवा")}</p>
-            </div>
-            <div className="invoice-document-copy">
-              {tr("GUEST COPY", "अतिथी प्रत")}
-            </div>
-          </header>
-
-          <div className="invoice-document-title">
-            <h1>{invoiceTypeLabel(generatedInvoice.invoiceType)}</h1>
-            <p>{tr("Accommodation Payment Receipt", "निवास पेमेंट पावती")}</p>
-          </div>
-
-          <section className="invoice-document-meta">
-            <div>
-              <span>{tr("Invoice No.", "इनव्हॉइस क्र.")}</span>
-              <strong>{generatedInvoice.invoiceNumber}</strong>
-            </div>
-            <div>
-              <span>{tr("Invoice Date", "इनव्हॉइस तारीख")}</span>
-              <strong>{formatDate(generatedInvoice.invoiceDate)}</strong>
-            </div>
-            <div>
-              <span>{tr("Booking Reference", "बुकिंग संदर्भ")}</span>
-              <strong>
-                {bookingReference ||
-                  generatedInvoice.bookingReference ||
-                  "—"}
-              </strong>
-            </div>
-          </section>
-
-          <section className="invoice-document-parties">
-            <div>
-              <span className="invoice-document-label">
-                {tr("RECEIVED FROM", "यांच्याकडून प्राप्त")}
-              </span>
-              <h3>{generatedInvoice.guestName}</h3>
-              <p>{printedGuestTypeLabel}</p>
-            </div>
-            <div>
-              <span className="invoice-document-label">
-                {tr("STAY PERIOD", "निवास कालावधी")}
-              </span>
-              <p>
-                <strong>{tr("Check-in:", "चेक-इन:")}</strong>{" "}
-                {formatDate(checkIn)}
-              </p>
-              <p>
-                <strong>{tr("Check-out:", "चेक-आउट:")}</strong>{" "}
-                {formatDate(checkOut)}
-              </p>
-            </div>
-          </section>
-
-          <section className="invoice-document-section">
-            <h3>{tr("ACCOMMODATION DETAILS", "निवास तपशील")}</h3>
-            <table className="invoice-document-table">
-              <thead>
-                <tr>
-                  <th>{tr("Room / Bed", "खोली / बेड")}</th>
-                  <th>{tr("Occupant", "अतिथी")}</th>
-                  <th>{tr("Stay", "कालावधी")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {accommodations.map((item, index) => (
-                  <tr key={`${item.roomName}-${item.guestName}-${index}`}>
-                    <td>
-                      {item.roomName}
-                      {item.bedNumber
-                        ? ` — ${tr("Bed", "बेड")} ${item.bedNumber}`
-                        : ` — ${tr("Whole room", "संपूर्ण खोली")}`}
-                    </td>
-                    <td>{item.guestName}</td>
-                    <td>
-                      {formatDate(checkIn)} – {formatDate(checkOut)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </section>
-
-          <section className="invoice-document-section">
-            <h3>{tr("PAYMENT SUMMARY", "पेमेंट सारांश")}</h3>
-            <table className="invoice-document-table invoice-document-amounts">
-              <tbody>
-                <tr>
-                  <td>{tr("Accommodation charges", "निवास शुल्क")}</td>
-                  <td>{formatCurrency(generatedInvoice.totalAmount)}</td>
-                </tr>
-                <tr className="invoice-document-paid">
-                  <td>{tr("Amount received", "प्राप्त रक्कम")}</td>
-                  <td>{formatCurrency(generatedInvoice.paidAmount)}</td>
-                </tr>
-                <tr className="invoice-document-balance">
-                  <th>{tr("Balance payable", "देय बाकी")}</th>
-                  <th>{formatCurrency(generatedInvoice.balanceAmount)}</th>
-                </tr>
-              </tbody>
-            </table>
-          </section>
-
-          <section className="invoice-document-payment">
-            <div>
-              <span>{tr("Payment Mode", "पेमेंट पद्धत")}</span>
-              <strong>{generatedInvoice.paymentMethod.replace("_", " ")}</strong>
-            </div>
-            <div>
-              <span>{tr("Payment Date", "पेमेंट तारीख")}</span>
-              <strong>{formatDate(paymentDate)}</strong>
-            </div>
-            {generatedInvoice.transactionNumber && (
-              <div>
-                <span>{tr("Transaction / Reference No.", "व्यवहार / संदर्भ क्र.")}</span>
-                <strong>{generatedInvoice.transactionNumber}</strong>
-              </div>
-            )}
-          </section>
-
-          {generatedInvoice.remarks && (
-            <section className="invoice-document-remarks">
-              <strong>{tr("Remarks:", "शेरा:")}</strong>{" "}
-              {generatedInvoice.remarks}
-            </section>
-          )}
-
-          <footer className="invoice-document-footer">
-            <p>
-              {tr(
-                "This receipt acknowledges the payment recorded against the booking shown above.",
-                "वरील बुकिंगसाठी नोंदवलेल्या पेमेंटची ही पावती आहे."
-              )}
-            </p>
-            <div className="invoice-document-signatures">
-              <div>
-                <span>{tr("Guest / Payer", "अतिथी / पैसे भरणारा")}</span>
-              </div>
-              <div>
-                <span>{tr("Authorized Signatory", "अधिकृत स्वाक्षरी")}</span>
-              </div>
-            </div>
-            <small>
-              {tr("Please retain this receipt for your records.", "कृपया ही पावती नोंदीसाठी जतन करा.")}
-            </small>
-          </footer>
+          {renderInvoiceCopy("GUEST")}
+          {generatedInvoice.invoiceType === "CASH_MEMO" &&
+            renderInvoiceCopy("ESM")}
         </article>
       </main>
     );

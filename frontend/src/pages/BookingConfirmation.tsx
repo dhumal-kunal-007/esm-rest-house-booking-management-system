@@ -1369,6 +1369,43 @@ function BookingConfirmation({
 
           </div>
 
+          {booking.rateSelection.accommodationCategory === "DORMITORY" &&
+            booking.rateResult.bedRateDetails?.map((detail) => {
+              const rateTypeLabel = detail.guestType === "ESM"
+                ? "ESM"
+                : detail.guestType === "SERVING"
+                  ? tr("Serving", "सेवारत")
+                  : tr("Civilian", "नागरिक");
+
+              return (
+                <div
+                  key={`${detail.roomName}-${detail.bedNumber}-${detail.guestName}`}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: "15px",
+                    padding: "10px 16px",
+                    borderBottom: "1px solid #e5e9e2",
+                    background: "#fbfcfa",
+                  }}
+                >
+                  <span>
+                    {detail.roomName} · {tr("Bed", "बेड")} {detail.bedNumber} — {detail.guestName}
+                    <small
+                      style={{
+                        display: "block",
+                        marginTop: "4px",
+                        color: "#788176",
+                      }}
+                    >
+                      {detail.relationship} · {rateTypeLabel} · {formatCurrency(detail.dailyRate)} / {tr("night", "रात्र")} × {booking.rateResult.accommodationDays} {tr("day(s)", "दिवस")}
+                    </small>
+                  </span>
+                  <strong>{formatCurrency(detail.stayAmount)}</strong>
+                </div>
+              );
+            })}
+
 
           <div
             style={{

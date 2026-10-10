@@ -98,6 +98,7 @@ export interface BookingDraft {
 
 interface BookingProps {
   category: AccommodationCategory;
+  initialBooking?: BookingDraft | null;
 
   officerName: string;
 
@@ -246,6 +247,7 @@ const createEmptyGuest =
 
 function Booking({
   category,
+  initialBooking,
   officerName,
   userId: _userId,
   onBack,
@@ -291,7 +293,7 @@ function Booking({
     setBookingType,
   ] = useState<
     "CURRENT" | "ADVANCE"
-  >("CURRENT");
+  >(initialBooking?.bookingType ?? "CURRENT");
 
   /* =================================
      SERVICEMAN
@@ -300,15 +302,17 @@ function Booking({
   const [
     serviceman,
     setServiceman,
-  ] = useState<BookingDraft["serviceman"]>({
-    number: "",
-    rank: "",
-    name: "",
-    mobile: "",
-    address: "",
-    aadhaar: "",
-    document: null,
-  });
+  ] = useState<BookingDraft["serviceman"]>(
+    initialBooking?.serviceman ?? {
+      number: "",
+      rank: "",
+      name: "",
+      mobile: "",
+      address: "",
+      aadhaar: "",
+      document: null,
+    }
+  );
 
   /* =================================
      GUEST COUNT
@@ -317,8 +321,10 @@ function Booking({
   const [
     guestCount,
     setGuestCount,
-  ] = useState(1);
-  const [guestCountInput, setGuestCountInput] = useState("1");
+  ] = useState(initialBooking?.guests.length ?? 1);
+  const [guestCountInput, setGuestCountInput] = useState(
+    String(initialBooking?.guests.length ?? 1)
+  );
 
   /* =================================
      GUESTS
@@ -327,9 +333,9 @@ function Booking({
   const [
     guests,
     setGuests,
-  ] = useState<Guest[]>([
-    createEmptyGuest(),
-  ]);
+  ] = useState<Guest[]>(
+    initialBooking?.guests ?? [createEmptyGuest()]
+  );
 
   /* =================================
      DURATION
@@ -339,16 +345,17 @@ function Booking({
     checkIn,
     setCheckIn,
   ] = useState(
-    createDateTime(
-      today,
-      STANDARD_CHECK_IN_TIME
-    )
+    initialBooking?.checkIn ??
+      createDateTime(
+        today,
+        STANDARD_CHECK_IN_TIME
+      )
   );
 
   const [
     checkOut,
     setCheckOut,
-  ] = useState("");
+  ] = useState(initialBooking?.checkOut ?? "");
   const [checkInError, setCheckInError] = useState("");
   const [checkOutError, setCheckOutError] = useState("");
 

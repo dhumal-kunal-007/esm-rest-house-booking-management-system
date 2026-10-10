@@ -28,6 +28,14 @@ export const roomRateColumnForGuestType = (
   }
 };
 
+export const guestTypeForDormitoryRelationship = (
+  relationship: string,
+  bookingGuestType: GuestType
+): GuestType =>
+  relationship.trim().toUpperCase() === "SELF"
+    ? bookingGuestType
+    : "CIVILIAN";
+
 export interface BookingPricingResult {
   guestType: GuestType;
   accommodationCategory: AccommodationCategory;

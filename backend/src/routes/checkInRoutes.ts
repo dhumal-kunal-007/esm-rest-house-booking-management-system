@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { pool } from "../config/db.js";
+import { resolveActualCheckInTimestamp } from "../services/checkInAccounting.js";
 import {
   BOOKING_CHECK_IN_TIME,
   BOOKING_TIME_ZONE,
@@ -87,6 +88,10 @@ router.get(
           b.check_in_date,
           b.expected_check_out_date,
 
+          (
+            CURRENT_TIMESTAMP AT TIME ZONE $2::text
+          ) >= (b.check_in_date + $3::time) AS check_in_available,
+
           b.approval_status,
           b.acceptance_status,
           a.allotment_status,
@@ -141,7 +146,11 @@ router.get(
           r.room_number ASC,
           bd.bed_number ASC,
           g.guest_name ASC
-      `, [successfulPaymentStatus]);
+      `, [
+        successfulPaymentStatus,
+        BOOKING_TIME_ZONE,
+        BOOKING_CHECK_IN_TIME,
+      ]);
 
       res.json({
         guests: result.rows,
@@ -163,6 +172,378 @@ router.get(
   }
 );
 
+
+/* =========================================
+   POST MANUAL PRE-CHECKIN
+========================================= */
+
+router.post(
+  "/manual",
+  async (
+    req: Request,
+    res: Response
+  ): Promise<void> => {
+    const {
+      allotment_id,
+      booking_id,
+      guest_id,
+      room_id,
+      bed_id = null,
+      checked_in_by,
+      actual_check_in_date,
+      actual_check_in_time = "12:00",
+      amount,
+      payment_method = "CASH",
+      remarks,
+    } = req.body;
+
+    if (!allotment_id) {
+      res.status(400).json({
+        message: "Allotment ID is required.",
+      });
+      return;
+    }
+
+    if (!booking_id) {
+      res.status(400).json({
+        message: "Booking ID is required.",
+      });
+      return;
+    }
+
+    if (!guest_id) {
+      res.status(400).json({
+        message: "Guest ID is required.",
+      });
+      return;
+    }
+
+    if (!room_id) {
+      res.status(400).json({
+        message: "Room ID is required.",
+      });
+      return;
+    }
+
+    if (!checked_in_by) {
+      res.status(400).json({
+        message: "Checked-in user ID is required.",
+      });
+      return;
+    }
+
+    if (!actual_check_in_date) {
+      res.status(400).json({
+        message: "Actual check-in date is required.",
+      });
+      return;
+    }
+
+    const requestedBedId = bed_id || null;
+    const actualCheckInTimestamp = resolveActualCheckInTimestamp(
+      actual_check_in_date,
+      actual_check_in_time
+    );
+
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const allotmentResult = await client.query(
+        `
+        SELECT
+          a.id,
+          a.booking_id,
+          a.guest_id,
+          a.room_id,
+          a.bed_id,
+          a.allotment_status,
+          r.room_number
+        FROM allotments a
+        INNER JOIN rooms r ON r.id = a.room_id
+        WHERE a.id = $1
+        FOR UPDATE
+        `,
+        [allotment_id]
+      );
+
+      if (allotmentResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        res.status(404).json({
+          message: "The selected allotment was not found.",
+        });
+        return;
+      }
+
+      const allotment = allotmentResult.rows[0];
+
+      if (allotment.allotment_status !== "ALLOTTED") {
+        await client.query("ROLLBACK");
+        res.status(400).json({
+          message: "This allotment is no longer active.",
+        });
+        return;
+      }
+
+      if (
+        allotment.booking_id !== booking_id ||
+        allotment.guest_id !== guest_id ||
+        allotment.room_id !== room_id ||
+        allotment.bed_id !== requestedBedId
+      ) {
+        await client.query("ROLLBACK");
+        res.status(400).json({
+          message: "The manual check-in information does not match the active allotment.",
+        });
+        return;
+      }
+
+      const bookingResult = await client.query(
+        `
+        SELECT
+          id,
+          booking_reference,
+          booking_status,
+          approval_status,
+          acceptance_status,
+          check_in_date,
+          expected_check_out_date
+        FROM bookings
+        WHERE id = $1
+        FOR UPDATE
+        `,
+        [booking_id]
+      );
+
+      if (bookingResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        res.status(404).json({
+          message: "The booking associated with this allotment was not found.",
+        });
+        return;
+      }
+
+      const booking = bookingResult.rows[0];
+
+      if (booking.approval_status !== "APPROVED") {
+        await client.query("ROLLBACK");
+        res.status(403).json({
+          message: "Manual pre-checkin is not allowed until the booking is approved.",
+          approval_status: booking.approval_status,
+          booking_reference: booking.booking_reference,
+        });
+        return;
+      }
+
+      if (booking.acceptance_status !== "ACCEPTED") {
+        await client.query("ROLLBACK");
+        res.status(403).json({
+          message: "Manual pre-checkin is not allowed until the guest accepts the assigned accommodation.",
+          acceptance_status: booking.acceptance_status,
+          booking_reference: booking.booking_reference,
+        });
+        return;
+      }
+
+      const existingCheckIn = await client.query(
+        `
+        SELECT id
+        FROM check_ins
+        WHERE allotment_id = $1
+        LIMIT 1
+        `,
+        [allotment_id]
+      );
+
+      if (existingCheckIn.rows.length > 0) {
+        await client.query("ROLLBACK");
+        res.status(409).json({
+          message: "This guest has already been checked in.",
+        });
+        return;
+      }
+
+      const userResult = await client.query(
+        `
+        SELECT id, full_name, is_active
+        FROM users
+        WHERE id = $1
+        `,
+        [checked_in_by]
+      );
+
+      if (userResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        res.status(404).json({
+          message: "The checking-in user was not found.",
+        });
+        return;
+      }
+
+      if (!userResult.rows[0].is_active) {
+        await client.query("ROLLBACK");
+        res.status(403).json({
+          message: "The checking-in user is inactive.",
+        });
+        return;
+      }
+
+      const successfulPaymentStatus = await getSuccessfulPaymentStatus(client);
+
+      const checkInResult = await client.query(
+        `
+        INSERT INTO check_ins (
+          booking_id,
+          guest_id,
+          allotment_id,
+          check_in_time,
+          checked_in_by,
+          remarks
+        )
+        VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6
+        )
+        RETURNING
+          id,
+          booking_id,
+          guest_id,
+          allotment_id,
+          check_in_time,
+          checked_in_by,
+          remarks
+        `,
+        [
+          booking_id,
+          guest_id,
+          allotment_id,
+          actualCheckInTimestamp,
+          checked_in_by,
+          remarks ?? "Manual pre-checkin entry created by admin.",
+        ]
+      );
+
+      if (allotment.bed_id !== null) {
+        await client.query(
+          `
+          UPDATE beds
+          SET bed_status = 'OCCUPIED'
+          WHERE id = $1
+          `,
+          [allotment.bed_id]
+        );
+      }
+
+      await client.query(
+        `
+        UPDATE rooms
+        SET room_status = 'OCCUPIED', updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+        `,
+        [allotment.room_id]
+      );
+
+      const bookingGuestsResult = await client.query(
+        `
+        SELECT COUNT(*)::INTEGER AS total_guests
+        FROM booking_guests
+        WHERE booking_id = $1
+        `,
+        [booking_id]
+      );
+
+      const checkedInGuestsResult = await client.query(
+        `
+        SELECT COUNT(*)::INTEGER AS checked_in_guests
+        FROM check_ins
+        WHERE booking_id = $1
+        `,
+        [booking_id]
+      );
+
+      const totalGuests = Number(bookingGuestsResult.rows[0].total_guests);
+      const checkedInGuests = Number(checkedInGuestsResult.rows[0].checked_in_guests);
+
+      if (totalGuests > 0 && checkedInGuests >= totalGuests) {
+        await client.query(
+          `
+          UPDATE bookings
+          SET booking_status = 'CHECKED_IN', updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1
+          `,
+          [booking_id]
+        );
+      }
+
+      const amountValue = Number(amount);
+      let paymentCreated = false;
+
+      if (Number.isFinite(amountValue) && amountValue > 0) {
+        const normalizedMethod = String(payment_method || "CASH").toUpperCase();
+
+        await client.query(
+          `
+          INSERT INTO payments (
+            booking_id,
+            amount,
+            payment_method,
+            transaction_number,
+            payment_date,
+            payment_status,
+            remarks,
+            received_by
+          )
+          VALUES (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5,
+            $6,
+            $7,
+            $8
+          )
+          `,
+          [
+            booking_id,
+            amountValue,
+            normalizedMethod,
+            null,
+            actual_check_in_date,
+            successfulPaymentStatus,
+            remarks ? String(remarks).trim() : "Manual pre-checkin entry recorded by admin.",
+            checked_in_by,
+          ]
+        );
+
+        paymentCreated = true;
+      }
+
+      await client.query("COMMIT");
+
+      res.status(201).json({
+        message: "Pre-checkin recorded successfully.",
+        payment_created: paymentCreated,
+        approval_status: booking.approval_status,
+        checkIn: checkInResult.rows[0],
+        actual_check_in_time: actualCheckInTimestamp,
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      console.error("POST /api/check-ins/manual error:", error);
+      res.status(500).json({
+        message: "Unable to record the manual pre-checkin.",
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
 
 /* =========================================
    POST CHECK-IN

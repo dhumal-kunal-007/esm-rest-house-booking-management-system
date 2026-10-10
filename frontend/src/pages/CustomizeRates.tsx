@@ -25,6 +25,15 @@ type EditableRateField =
 
 type RoomGroup = "AC" | "NAC" | "DM" | "HALL" | "VIP" | "OTHER";
 
+const roomCategoryOptions = [
+  "AC",
+  "NAC",
+  "DM",
+  "HALL",
+  "VIP",
+  "OTHER",
+] as const;
+
 interface CustomizeRatesProps {
   onBack: () => void;
 }
@@ -210,6 +219,21 @@ function CustomizeRates({ onBack }: CustomizeRatesProps) {
     setMessage("");
   };
 
+  const updateRoomField = (
+    roomId: string,
+    field: "room_number" | "category_name",
+    value: string
+  ) => {
+    setRooms((current) =>
+      current.map((room) =>
+        room.id === roomId
+          ? { ...room, [field]: value }
+          : room
+      )
+    );
+    setMessage("");
+  };
+
   const saveRoom = async (room: RoomRateCard) => {
     const key = `room:${room.id}`;
     setSavingKey(key);
@@ -217,11 +241,13 @@ function CustomizeRates({ onBack }: CustomizeRatesProps) {
     setError("");
     try {
       const response = await apiFetch(
-        `http://localhost:5000/api/rooms/${room.id}/rate-card`,
+        `http://localhost:5000/api/rooms/${room.id}`,
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            room_number: room.room_number,
+            category_name: room.category_name,
             room_capacity: room.room_capacity,
             bed_capacity: room.bed_capacity,
             esm_room_rate: room.esm_room_rate,
@@ -234,6 +260,22 @@ function CustomizeRates({ onBack }: CustomizeRatesProps) {
       if (!response.ok || !data.success) {
         throw new Error(data.message || "Unable to save this room's settings.");
       }
+      setRooms((current) =>
+        current.map((currentRoom) =>
+          currentRoom.id === room.id
+            ? {
+                ...currentRoom,
+                room_number: room.room_number,
+                category_name: room.category_name,
+                room_capacity: room.room_capacity,
+                bed_capacity: room.bed_capacity,
+                esm_room_rate: room.esm_room_rate,
+                serving_room_rate: room.serving_room_rate,
+                civilian_room_rate: room.civilian_room_rate,
+              }
+            : currentRoom
+        )
+      );
       setMessage(
         tr(
           `Saved settings for ${room.room_number}.`,
@@ -374,6 +416,39 @@ function CustomizeRates({ onBack }: CustomizeRatesProps) {
 
   const renderRoomFields = (room: RoomRateCard) => (
     <div className="customize-rate-fields">
+      <label className="customize-rate-field">
+        <span>{tr("Room number", "खोली क्रमांक")}</span>
+        <span className="customize-rate-input-wrap">
+          <input
+            aria-label={`${room.room_number} room number`}
+            type="text"
+            value={room.room_number}
+            onChange={(event) =>
+              updateRoomField(room.id, "room_number", event.target.value)
+            }
+          />
+        </span>
+      </label>
+
+      <label className="customize-rate-field">
+        <span>{tr("Room type", "खोलीचा प्रकार")}</span>
+        <span className="customize-rate-input-wrap">
+          <select
+            aria-label={`${room.room_number} room type`}
+            value={room.category_name || "AC"}
+            onChange={(event) =>
+              updateRoomField(room.id, "category_name", event.target.value)
+            }
+          >
+            {roomCategoryOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </span>
+      </label>
+
       {fields.map((field) => (
         <label className="customize-rate-field" key={field.key}>
           <span>{tr(field.label, field.label)}</span>
@@ -411,7 +486,7 @@ function CustomizeRates({ onBack }: CustomizeRatesProps) {
             <span className="customize-rates-eyebrow">
               {tr("ADMINISTRATION", "प्रशासन")}
             </span>
-            <h1>{tr("Customize Rates", "दर सानुकूलित करा")}</h1>
+            <h1>{tr("Customize Room and Rates", "खोली आणि दर सानुकूलित करा")}</h1>
             <p>
               {tr(
                 "Manage approved rates and capacities. Beds are for availability tracking only and never have a separate charge.",

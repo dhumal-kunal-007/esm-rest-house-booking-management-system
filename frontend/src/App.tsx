@@ -64,6 +64,7 @@ import type {
 } from "./pages/GuestType";
 
 import type {
+  BedRateDetail,
   RateSelection,
   RateResult,
 } from "./pages/Rate";
@@ -818,7 +819,7 @@ function AppContent() {
 
   const getAcceptedAccommodationCategory = (
     item: AcceptedAccommodation
-  ): string => {
+  ): RateSelection["accommodationCategory"] => {
 
     const roomName =
       String(
@@ -918,6 +919,35 @@ function AppContent() {
           "Please login again.",
       });
 
+      return;
+    }
+
+    if (booking.id) {
+      try {
+        await saveBookingProgress(
+          booking.id,
+          "AVAILABILITY",
+          {
+            availability_selections:
+              workflow.availabilitySelections,
+          }
+        );
+        setWorkflow((current) => ({
+          ...current,
+          stage: "AVAILABILITY",
+          booking,
+        }));
+        setCurrentPage("workflow");
+      } catch (error) {
+        setModal({
+          type: "error",
+          title: "Booking Draft Could Not Be Saved",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Unable to save the current booking draft.",
+        });
+      }
       return;
     }
 
@@ -1372,6 +1402,11 @@ function AppContent() {
               pricing.additionalMemberAmount
             ),
             totalAmount: Number(pricing.totalAmount),
+            bedRateDetails: Array.isArray(
+              data.progress_data?.dm_bed_rate_details
+            )
+              ? data.progress_data.dm_bed_rate_details as BedRateDetail[]
+              : [],
           }
         : null;
       const bookingConfirmation: BookingConfirmationData | null =
@@ -1839,6 +1874,9 @@ console.log(
           Number(data.pricing.additionalMemberAmount),
         totalAmount:
           Number(data.pricing.totalAmount),
+        bedRateDetails: Array.isArray(data.pricing.dmBedRateDetails)
+          ? data.pricing.dmBedRateDetails as BedRateDetail[]
+          : [],
       };
 
       setWorkflow((current) => ({
@@ -2033,6 +2071,24 @@ console.log(
         await response.json();
 
       if (!response.ok) {
+        const alreadyApproved =
+          decision === "APPROVED" &&
+          String(data.message || "").toLowerCase().includes("already approved");
+        if (alreadyApproved) {
+          setWorkflow((current) => ({
+            ...current,
+            approvalDecision: "APPROVED",
+            approvalRemarks: remarks,
+            stage: "PAYMENT",
+          }));
+          setModal({
+            type: "success",
+            title: "Booking Already Approved",
+            message: "This booking is already approved. Proceed to payment.",
+            onCloseAction: () => setCurrentPage("workflow"),
+          });
+          return;
+        }
         throw new Error(
           data.message ||
           "Unable to process booking approval."
@@ -2901,6 +2957,10 @@ const handleRoomLockedContinue = async (
             bookingCategory
           }
 
+          initialBooking={
+            workflow.booking
+          }
+
           officerName={
             loggedInUser.name
           }
@@ -3059,10 +3119,15 @@ const handleRoomLockedContinue = async (
 
     }
 
-    const rateCategory =
-      getRateAccommodationCategory(
-        workflow.booking.category
-      );
+    const firstAcceptedAccommodation =
+      workflow.acceptedAccommodation[0];
+    const rateCategory = firstAcceptedAccommodation
+      ? getAcceptedAccommodationCategory(
+          firstAcceptedAccommodation
+        )
+      : getRateAccommodationCategory(
+          workflow.booking.category
+        );
 
     const numberOfRooms = new Set(
       workflow.acceptedAccommodation
@@ -3402,6 +3467,10 @@ const handleRoomLockedContinue = async (
             approvalData
           }
 
+          alreadyApproved={
+            workflow.approvalDecision === "APPROVED"
+          }
+
           onBack={() => {
             void handleBookingStepBack(
               "BOOKING_CONFIRMATION",
@@ -3412,6 +3481,13 @@ const handleRoomLockedContinue = async (
           onDecision={
             handleApprovalDecision
           }
+
+          onContinueToPayment={() => {
+            setWorkflow((current) => ({
+              ...current,
+              stage: "PAYMENT",
+            }));
+          }}
         />
 
         {renderModal()}
@@ -4274,6 +4350,10 @@ const handleRoomLockedContinue = async (
 
           userName={
             loggedInUser.name
+          }
+
+          userRole={
+            loggedInUser.role
           }
 
           onBack={

@@ -3,6 +3,7 @@ import { pool } from "../config/db.js";
 import {
   type DailyReportType,
   buildLiveDailyReportSnapshot,
+  getUpcomingAdvanceBookings,
   persistDailyReportSnapshot,
 } from "../services/dailyReport.js";
 
@@ -43,6 +44,7 @@ router.get("/summary", async (req, res) => {
           WHERE
             b.is_active = TRUE
             AND r.is_active = TRUE
+            AND r.room_usage = 'GUEST'
             AND r.is_under_maintenance = FALSE
             AND UPPER(b.bed_status) = 'AVAILABLE'
         )::INTEGER AS available_beds,
@@ -57,7 +59,33 @@ router.get("/summary", async (req, res) => {
           WHERE
             b.is_active = TRUE
             AND r.is_active = TRUE
-            AND UPPER(b.bed_status) = 'OCCUPIED'
+            AND r.room_usage = 'GUEST'
+            AND (
+              UPPER(b.bed_status) = 'OCCUPIED'
+              OR (
+                UPPER(b.bed_status) = 'BOOKED'
+                AND EXISTS (
+                  SELECT 1
+                  FROM allotments a
+                  INNER JOIN check_ins ci
+                    ON ci.allotment_id = a.id
+                  WHERE
+                    a.room_id = r.id
+                    AND a.bed_id IS NULL
+                    AND a.allotment_status = 'ALLOTTED'
+                    AND ci.check_in_time <=
+                      (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')
+                    AND NOT EXISTS (
+                      SELECT 1
+                      FROM check_outs co
+                      WHERE
+                        co.allotment_id = a.id
+                        AND co.check_out_time <=
+                          (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')
+                    )
+                )
+              )
+            )
         )::INTEGER AS occupied_beds,
 
 
@@ -66,7 +94,8 @@ router.get("/summary", async (req, res) => {
           SELECT COUNT(*)
           FROM check_ins ci
           WHERE
-            DATE(ci.check_in_time) = CURRENT_DATE
+            DATE(ci.check_in_time) =
+              (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::DATE
         )::INTEGER AS todays_check_ins,
 
 
@@ -80,6 +109,7 @@ router.get("/summary", async (req, res) => {
             WHERE
               b.is_active = TRUE
               AND r.is_active = TRUE
+              AND r.room_usage = 'GUEST'
               AND UPPER(b.bed_status) = 'NEEDS_CLEANING'
           ) +
           (
@@ -116,6 +146,7 @@ router.get("/summary", async (req, res) => {
             WHERE
               b.is_active = TRUE
               AND r.is_active = TRUE
+              AND r.room_usage = 'GUEST'
               AND UPPER(b.bed_status) = 'CLEANING'
           ) +
           (
@@ -159,12 +190,12 @@ router.get("/summary", async (req, res) => {
         ON rc.id = r.category_id
       WHERE
         r.is_active = TRUE
+        AND r.room_usage = 'GUEST'
       GROUP BY
         LOWER(TRIM(rc.category_name))
       ORDER BY
         LOWER(TRIM(rc.category_name))
     `);
-
 
     /*
     |--------------------------------------------------------------------------
@@ -182,6 +213,17 @@ router.get("/summary", async (req, res) => {
         b.check_in_date,
         b.expected_check_out_date,
         b.created_at,
+        (
+          (b.created_by = $1 OR $2 = 'ADMIN')
+          AND b.booking_status = 'PENDING_APPROVAL'
+          AND b.approval_status = 'PENDING'
+          AND NOT EXISTS (
+            SELECT 1 FROM payments p WHERE p.booking_id = b.id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM allotments a WHERE a.booking_id = b.id
+          )
+        ) AS can_delete,
         CASE
           WHEN
             (b.created_by = $1 OR $2 = 'ADMIN')
@@ -299,6 +341,7 @@ router.get("/summary", async (req, res) => {
     */
 
     let acRooms = 0;
+    let vipRooms = 0;
     let nonAcRooms = 0;
     let dormitories = 0;
     let hallRooms = 0;
@@ -316,6 +359,8 @@ router.get("/summary", async (req, res) => {
 
       if (category === "ac") {
         acRooms += count;
+      } else if (category === "vip") {
+        vipRooms += count;
       } else if (
         category === "nonac" ||
         category === "nonairconditioned"
@@ -369,6 +414,7 @@ router.get("/summary", async (req, res) => {
 
       roomStatus: {
         acRooms,
+        vipRooms,
         nonAcRooms,
         dormitories,
         hallRooms,
@@ -494,6 +540,324 @@ router.get("/collections", async (req, res) => {
   }
 });
 
+router.get("/monthly-payment-transactions", async (req, res) => {
+  const reportDate = String(req.query.date ?? "");
+  const paymentMethod = String(req.query.method ?? "").toUpperCase();
+  const parsedDate = new Date(`${reportDate}T00:00:00.000Z`);
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(reportDate) ||
+    Number.isNaN(parsedDate.getTime()) ||
+    parsedDate.toISOString().slice(0, 10) !== reportDate
+  ) {
+    return res.status(400).json({
+      success: false,
+      message: "A valid report date in YYYY-MM-DD format is required.",
+    });
+  }
+  if (paymentMethod !== "CASH" && paymentMethod !== "UPI") {
+    return res.status(400).json({
+      success: false,
+      message: "Payment method must be CASH or UPI.",
+    });
+  }
+
+  try {
+    const result = await pool.query<{
+      payment_date: string;
+      payment_time: string;
+      booking_reference: string;
+      guest_name: string;
+      amount: string | number;
+      total: string | number;
+    }>(
+      `
+      SELECT
+        p.payment_date::TEXT AS payment_date,
+        COALESCE(TO_CHAR(p.created_at, 'HH12:MI AM'), '—') AS payment_time,
+        b.booking_reference,
+        COALESCE(primary_guest.guest_name, 'Guest not assigned') AS guest_name,
+        p.amount,
+        SUM(p.amount) OVER () AS total
+      FROM payments p
+      INNER JOIN bookings b
+        ON b.id = p.booking_id
+      LEFT JOIN LATERAL (
+        SELECT g.guest_name
+        FROM booking_guests bg
+        INNER JOIN guests g
+          ON g.id = bg.guest_id
+        WHERE bg.booking_id = p.booking_id
+        ORDER BY bg.is_primary_guest DESC, bg.created_at ASC
+        LIMIT 1
+      ) primary_guest
+        ON TRUE
+      WHERE
+        p.payment_date >= DATE_TRUNC('month', $1::DATE)::DATE
+        AND p.payment_date <
+          (DATE_TRUNC('month', $1::DATE) + INTERVAL '1 month')::DATE
+        AND UPPER(p.payment_method) = $2
+        AND UPPER(p.payment_status) IN ('SUCCESS', 'COMPLETED', 'PAID', 'RECEIVED')
+      ORDER BY
+        p.payment_date ASC,
+        p.created_at ASC,
+        p.id ASC
+      `,
+      [reportDate, paymentMethod]
+    );
+
+    const transactions = result.rows.map((row) => ({
+      paymentDate: row.payment_date,
+      paymentTime: row.payment_time,
+      bookingReference: row.booking_reference,
+      guestName: row.guest_name,
+      amount: Number(row.amount),
+    }));
+
+    return res.json({
+      success: true,
+      method: paymentMethod,
+      transactions,
+      total: result.rows.length > 0 ? Number(result.rows[0].total) : 0,
+    });
+  } catch (error) {
+    console.error("Monthly payment transactions error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to load monthly payment transactions.",
+    });
+  }
+});
+
+router.get("/annual-report", async (req, res) => {
+  try {
+    const currentYearResult = await pool.query<{ current_fy_start: number }>(`
+      SELECT CASE
+        WHEN EXTRACT(MONTH FROM (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')) >= 4
+          THEN EXTRACT(YEAR FROM (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata'))
+        ELSE EXTRACT(YEAR FROM (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')) - 1
+      END::INTEGER AS current_fy_start
+    `);
+    const currentFinancialYearStart = currentYearResult.rows[0].current_fy_start;
+    const requestedYear = Number(req.query.start_year ?? currentFinancialYearStart);
+
+    if (
+      !Number.isInteger(requestedYear) ||
+      requestedYear < 2000 ||
+      requestedYear > currentFinancialYearStart
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid financial year start year is required.",
+      });
+    }
+
+    const periodStart = `${requestedYear}-04-01`;
+    const periodEnd = `${requestedYear + 1}-04-01`;
+    const result = await pool.query<{
+      month_start: string;
+      cash_total: string | number;
+      upi_total: string | number;
+      total_collection: string | number;
+      checkin_male: string | number;
+      checkin_female: string | number;
+      checkin_children: string | number;
+      checkin_total: string | number;
+      checkout_male: string | number;
+      checkout_female: string | number;
+      checkout_children: string | number;
+      checkout_total: string | number;
+      annual_cash_total: string | number;
+      annual_upi_total: string | number;
+      annual_total_collection: string | number;
+      annual_checkin_male: string | number;
+      annual_checkin_female: string | number;
+      annual_checkin_children: string | number;
+      annual_checkin_total: string | number;
+      annual_checkout_male: string | number;
+      annual_checkout_female: string | number;
+      annual_checkout_children: string | number;
+      annual_checkout_total: string | number;
+    }>(
+      `
+      WITH months AS (
+        SELECT generate_series(
+          $1::DATE,
+          ($2::DATE - INTERVAL '1 month')::DATE,
+          INTERVAL '1 month'
+        )::DATE AS month_start
+      ), payment_totals AS (
+        SELECT
+          DATE_TRUNC('month', p.payment_date)::DATE AS month_start,
+          COALESCE(SUM(p.amount) FILTER (
+            WHERE UPPER(p.payment_method) = 'CASH'
+          ), 0)::NUMERIC(12, 2) AS cash_total,
+          COALESCE(SUM(p.amount) FILTER (
+            WHERE UPPER(p.payment_method) = 'UPI'
+          ), 0)::NUMERIC(12, 2) AS upi_total
+        FROM payments p
+        WHERE
+          p.payment_date >= $1::DATE
+          AND p.payment_date < $2::DATE
+          AND UPPER(p.payment_status) IN ('SUCCESS', 'COMPLETED', 'PAID', 'RECEIVED')
+          AND UPPER(p.payment_method) IN ('CASH', 'UPI')
+        GROUP BY DATE_TRUNC('month', p.payment_date)::DATE
+      ), guest_events AS (
+        SELECT
+          'CHECK_IN'::TEXT AS event_type,
+          ci.check_in_time AS event_time,
+          g.gender,
+          g.date_of_birth
+        FROM check_ins ci
+        INNER JOIN guests g ON g.id = ci.guest_id
+        WHERE ci.check_in_time >= $1::DATE
+          AND ci.check_in_time < $2::DATE
+
+        UNION ALL
+
+        SELECT
+          'CHECK_OUT'::TEXT AS event_type,
+          co.check_out_time AS event_time,
+          g.gender,
+          g.date_of_birth
+        FROM check_outs co
+        INNER JOIN guests g ON g.id = co.guest_id
+        WHERE co.check_out_time >= $1::DATE
+          AND co.check_out_time < $2::DATE
+      ), guest_totals AS (
+        SELECT
+          DATE_TRUNC('month', event_time)::DATE AS month_start,
+          event_type,
+          COUNT(*) FILTER (
+            WHERE date_of_birth IS NOT NULL
+              AND date_of_birth > event_time::DATE - INTERVAL '12 years'
+              AND date_of_birth <= event_time::DATE
+          )::INTEGER AS children,
+          COUNT(*) FILTER (
+            WHERE (date_of_birth IS NULL
+                OR date_of_birth <= event_time::DATE - INTERVAL '12 years')
+              AND UPPER(COALESCE(gender, '')) = 'MALE'
+          )::INTEGER AS male,
+          COUNT(*) FILTER (
+            WHERE (date_of_birth IS NULL
+                OR date_of_birth <= event_time::DATE - INTERVAL '12 years')
+              AND UPPER(COALESCE(gender, '')) = 'FEMALE'
+          )::INTEGER AS female,
+          COUNT(*)::INTEGER AS guests
+        FROM guest_events
+        GROUP BY DATE_TRUNC('month', event_time)::DATE, event_type
+      ), monthly AS (
+        SELECT
+          months.month_start,
+          COALESCE(payment_totals.cash_total, 0)::NUMERIC(12, 2) AS cash_total,
+          COALESCE(payment_totals.upi_total, 0)::NUMERIC(12, 2) AS upi_total,
+          (
+            COALESCE(payment_totals.cash_total, 0)
+            + COALESCE(payment_totals.upi_total, 0)
+          )::NUMERIC(12, 2) AS total_collection,
+          COALESCE(checkins.male, 0)::INTEGER AS checkin_male,
+          COALESCE(checkins.female, 0)::INTEGER AS checkin_female,
+          COALESCE(checkins.children, 0)::INTEGER AS checkin_children,
+          COALESCE(checkins.guests, 0)::INTEGER AS checkin_total,
+          COALESCE(checkouts.male, 0)::INTEGER AS checkout_male,
+          COALESCE(checkouts.female, 0)::INTEGER AS checkout_female,
+          COALESCE(checkouts.children, 0)::INTEGER AS checkout_children,
+          COALESCE(checkouts.guests, 0)::INTEGER AS checkout_total
+        FROM months
+        LEFT JOIN payment_totals
+          ON payment_totals.month_start = months.month_start
+        LEFT JOIN guest_totals checkins
+          ON checkins.month_start = months.month_start
+         AND checkins.event_type = 'CHECK_IN'
+        LEFT JOIN guest_totals checkouts
+          ON checkouts.month_start = months.month_start
+         AND checkouts.event_type = 'CHECK_OUT'
+      )
+      SELECT
+        TO_CHAR(monthly.month_start, 'YYYY-MM-DD') AS month_start,
+        monthly.cash_total,
+        monthly.upi_total,
+        monthly.total_collection,
+        monthly.checkin_male,
+        monthly.checkin_female,
+        monthly.checkin_children,
+        monthly.checkin_total,
+        monthly.checkout_male,
+        monthly.checkout_female,
+        monthly.checkout_children,
+        monthly.checkout_total,
+        SUM(cash_total) OVER ()::NUMERIC(12, 2) AS annual_cash_total,
+        SUM(upi_total) OVER ()::NUMERIC(12, 2) AS annual_upi_total,
+        SUM(total_collection) OVER ()::NUMERIC(12, 2) AS annual_total_collection,
+        SUM(checkin_male) OVER ()::INTEGER AS annual_checkin_male,
+        SUM(checkin_female) OVER ()::INTEGER AS annual_checkin_female,
+        SUM(checkin_children) OVER ()::INTEGER AS annual_checkin_children,
+        SUM(checkin_total) OVER ()::INTEGER AS annual_checkin_total,
+        SUM(checkout_male) OVER ()::INTEGER AS annual_checkout_male,
+        SUM(checkout_female) OVER ()::INTEGER AS annual_checkout_female,
+        SUM(checkout_children) OVER ()::INTEGER AS annual_checkout_children,
+        SUM(checkout_total) OVER ()::INTEGER AS annual_checkout_total
+      FROM monthly
+      ORDER BY month_start
+      `,
+      [periodStart, periodEnd]
+    );
+
+    const monthly = result.rows.map((row) => ({
+      monthStart: row.month_start,
+      cashTotal: Number(row.cash_total),
+      upiTotal: Number(row.upi_total),
+      totalCollection: Number(row.total_collection),
+      checkIns: {
+        male: Number(row.checkin_male),
+        female: Number(row.checkin_female),
+        children: Number(row.checkin_children),
+        total: Number(row.checkin_total),
+      },
+      checkOuts: {
+        male: Number(row.checkout_male),
+        female: Number(row.checkout_female),
+        children: Number(row.checkout_children),
+        total: Number(row.checkout_total),
+      },
+    }));
+    const totals = result.rows[0];
+    const upcomingAdvanceBookings =
+      await getUpcomingAdvanceBookings(pool);
+
+    return res.json({
+      success: true,
+      financialYearStart: requestedYear,
+      periodStart,
+      periodEnd: `${requestedYear + 1}-03-31`,
+      monthly,
+      totals: {
+        cash: Number(totals?.annual_cash_total ?? 0),
+        upi: Number(totals?.annual_upi_total ?? 0),
+        totalCollection: Number(totals?.annual_total_collection ?? 0),
+        checkIns: {
+          male: Number(totals?.annual_checkin_male ?? 0),
+          female: Number(totals?.annual_checkin_female ?? 0),
+          children: Number(totals?.annual_checkin_children ?? 0),
+          total: Number(totals?.annual_checkin_total ?? 0),
+        },
+        checkOuts: {
+          male: Number(totals?.annual_checkout_male ?? 0),
+          female: Number(totals?.annual_checkout_female ?? 0),
+          children: Number(totals?.annual_checkout_children ?? 0),
+          total: Number(totals?.annual_checkout_total ?? 0),
+        },
+      },
+      upcomingAdvanceBookings,
+    });
+  } catch (error) {
+    console.error("Annual report error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to load the annual financial report.",
+    });
+  }
+});
+
 router.get("/daily-report", async (req, res) => {
   const reportDate = String(req.query.date ?? "");
   const requestedType = String(req.query.period ?? "daily").toUpperCase();
@@ -584,9 +948,12 @@ router.get("/daily-report", async (req, res) => {
         : await buildLiveDailyReportSnapshot(reportDate, reportType));
 
     const { feedback, ...reportData } = snapshot;
+    const upcomingAdvanceBookings =
+      await getUpcomingAdvanceBookings(pool);
     return res.json({
       success: true,
       ...reportData,
+      upcomingAdvanceBookings,
       feedback: req.authUser?.role === "ADMIN" ? feedback : [],
       snapshotSaved: Boolean(savedResult.rows[0]) || reportDue,
     });

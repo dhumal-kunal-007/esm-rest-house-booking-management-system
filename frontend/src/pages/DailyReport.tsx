@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "../api";
+import AppModal from "../components/AppModal";
 import { useLanguage } from "../i18n/LanguageContext";
 import type { User } from "../App";
 
@@ -12,6 +13,20 @@ interface DailyReportRoom {
   children: number;
   guests: number;
   amount: number;
+}
+
+interface UpcomingAdvanceBooking {
+  bookingReference: string;
+  serviceMember: string;
+  guests: string;
+  bookingStatus: string;
+  approvalStatus: string;
+  checkInDate: string;
+  checkOutDate: string;
+  roomDetails: string;
+  guestCount: number;
+  bookingAmount: number;
+  amountPaid: number;
 }
 
 interface OccupancyTotals {
@@ -30,6 +45,7 @@ interface DailyReportData {
   periodEnd: string;
   generatedAt: string;
   snapshotSaved: boolean;
+  upcomingAdvanceBookings?: UpcomingAdvanceBooking[];
   rooms: DailyReportRoom[];
   totals: OccupancyTotals;
   activity: {
@@ -59,6 +75,40 @@ interface DailyReportData {
   message?: string;
 }
 
+type ReportType = DailyReportData["reportType"] | "ANNUAL";
+
+interface AnnualGuestCounts {
+  male: number;
+  female: number;
+  children: number;
+  total: number;
+}
+
+interface AnnualReportMonth {
+  monthStart: string;
+  cashTotal: number;
+  upiTotal: number;
+  totalCollection: number;
+  checkIns: AnnualGuestCounts;
+  checkOuts: AnnualGuestCounts;
+}
+
+interface AnnualReportData {
+  success: boolean;
+  financialYearStart: number;
+  periodStart: string;
+  periodEnd: string;
+  upcomingAdvanceBookings: UpcomingAdvanceBooking[];
+  monthly: AnnualReportMonth[];
+  totals: {
+    cash: number;
+    upi: number;
+    totalCollection: number;
+    checkIns: AnnualGuestCounts;
+    checkOuts: AnnualGuestCounts;
+  };
+}
+
 interface CheckoutFeedbackReportRow {
   booking_id: string;
   booking_reference: string;
@@ -71,6 +121,21 @@ interface CheckoutFeedbackReportRow {
   comments: string | null;
   feedback_status: "SUBMITTED" | "SKIPPED";
   submitted_at: string;
+}
+
+interface MonthlyPaymentTransaction {
+  paymentDate: string;
+  paymentTime: string;
+  bookingReference: string;
+  guestName: string;
+  amount: number;
+}
+
+interface MonthlyPaymentPrintData {
+  method: "CASH" | "UPI";
+  transactions: MonthlyPaymentTransaction[];
+  total: number;
+  monthLabel: string;
 }
 
 interface DailyReportProps {
@@ -86,20 +151,39 @@ const getLocalDateValue = (): string => {
   return `${year}-${month}-${day}`;
 };
 
+const getCurrentFinancialYearStart = (): number => {
+  const today = new Date();
+  return today.getMonth() >= 3
+    ? today.getFullYear()
+    : today.getFullYear() - 1;
+};
+
 const normalizeCategory = (value: string): string =>
   value.toUpperCase().replace(/[\s_-]/g, "");
 
 function DailyReport({ user, onBack }: DailyReportProps) {
   const { language } = useLanguage();
   const today = getLocalDateValue();
-  const [reportType, setReportType] =
-    useState<DailyReportData["reportType"]>("DAILY");
+  const currentFinancialYearStart = getCurrentFinancialYearStart();
+  const [reportType, setReportType] = useState<ReportType>("DAILY");
   const [date, setDate] = useState(today);
+  const [financialYearStart, setFinancialYearStart] =
+    useState(currentFinancialYearStart);
   const [report, setReport] = useState<DailyReportData | null>(null);
+  const [annualReport, setAnnualReport] =
+    useState<AnnualReportData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshCounter, setRefreshCounter] = useState(0);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [paymentPrint, setPaymentPrint] =
+    useState<MonthlyPaymentPrintData | null>(null);
+  const [annualPaymentDetails, setAnnualPaymentDetails] =
+    useState<MonthlyPaymentPrintData | null>(null);
+  const [annualPaymentLoading, setAnnualPaymentLoading] =
+    useState<string | null>(null);
+  const [printingPaymentMethod, setPrintingPaymentMethod] =
+    useState<"CASH" | "UPI" | null>(null);
   const hasReport = useRef(false);
 
   useEffect(() => {
@@ -119,22 +203,29 @@ function DailyReport({ user, onBack }: DailyReportProps) {
       }
       setError("");
       try {
-        const response = await apiFetch(
-          `http://localhost:5000/api/dashboard/daily-report?date=${encodeURIComponent(date)}&period=${reportType.toLowerCase()}`,
-          { cache: "no-store" }
-        );
-        const data: DailyReportData = await response.json();
+        const endpoint = reportType === "ANNUAL"
+          ? `http://localhost:5000/api/dashboard/annual-report?start_year=${financialYearStart}`
+          : `http://localhost:5000/api/dashboard/daily-report?date=${encodeURIComponent(date)}&period=${reportType.toLowerCase()}`;
+        const response = await apiFetch(endpoint, { cache: "no-store" });
+        const data = await response.json();
         if (!response.ok || !data.success) {
           throw new Error(data.message || "Unable to load the daily report.");
         }
         if (!cancelled) {
-          setReport(data);
+          if (reportType === "ANNUAL") {
+            setAnnualReport(data as AnnualReportData);
+            setReport(null);
+          } else {
+            setReport(data as DailyReportData);
+            setAnnualReport(null);
+          }
           hasReport.current = true;
           setLastUpdated(new Date());
         }
       } catch (loadError) {
         if (!cancelled) {
           setReport(null);
+          setAnnualReport(null);
           hasReport.current = false;
           setError(
             loadError instanceof Error
@@ -153,12 +244,31 @@ function DailyReport({ user, onBack }: DailyReportProps) {
     return () => {
       cancelled = true;
     };
-  }, [date, refreshCounter, reportType]);
+  }, [date, financialYearStart, refreshCounter, reportType]);
+
+  useEffect(() => {
+    if (!paymentPrint) return;
+
+    const clearPaymentPrint = () => setPaymentPrint(null);
+    const printTimer = window.setTimeout(() => window.print(), 250);
+    window.addEventListener("afterprint", clearPaymentPrint);
+
+    return () => {
+      window.clearTimeout(printTimer);
+      window.removeEventListener("afterprint", clearPaymentPrint);
+    };
+  }, [paymentPrint]);
 
   const formatDate = (value: string) =>
     new Date(`${value}T12:00:00`).toLocaleDateString(
       language === "mr" ? "mr-IN" : "en-IN",
       { day: "2-digit", month: "2-digit", year: "numeric" }
+    );
+
+  const formatMonth = (value: string) =>
+    new Date(`${value}T12:00:00`).toLocaleDateString(
+      language === "mr" ? "mr-IN" : "en-IN",
+      { month: "long", year: "numeric" }
     );
 
   const formatDateTime = (value: string) =>
@@ -179,6 +289,81 @@ function DailyReport({ user, onBack }: DailyReportProps) {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
+
+  const printPaymentTransactions = async (
+    method: "CASH" | "UPI",
+    monthDate = date
+  ) => {
+    setPrintingPaymentMethod(method);
+    setError("");
+    try {
+      const response = await apiFetch(
+        `http://localhost:5000/api/dashboard/monthly-payment-transactions?date=${encodeURIComponent(monthDate)}&method=${method}`,
+        { cache: "no-store" }
+      );
+      const data: {
+        success: boolean;
+        transactions?: MonthlyPaymentTransaction[];
+        total?: number;
+        message?: string;
+      } = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Unable to load payment transactions.");
+      }
+      setPaymentPrint({
+        method,
+        transactions: data.transactions ?? [],
+        total: Number(data.total ?? 0),
+        monthLabel: formatMonth(monthDate),
+      });
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Unable to load payment transactions."
+      );
+    } finally {
+      setPrintingPaymentMethod(null);
+    }
+  };
+
+  const openAnnualPaymentDetails = async (
+    month: AnnualReportMonth,
+    method: "CASH" | "UPI"
+  ) => {
+    const requestKey = `${month.monthStart}-${method}`;
+    setAnnualPaymentLoading(requestKey);
+    setError("");
+    try {
+      const response = await apiFetch(
+        `http://localhost:5000/api/dashboard/monthly-payment-transactions?date=${encodeURIComponent(month.monthStart)}&method=${method}`,
+        { cache: "no-store" }
+      );
+      const data: {
+        success: boolean;
+        transactions?: MonthlyPaymentTransaction[];
+        total?: number;
+        message?: string;
+      } = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Unable to load payment transactions.");
+      }
+      setAnnualPaymentDetails({
+        method,
+        transactions: data.transactions ?? [],
+        total: Number(data.total ?? 0),
+        monthLabel: formatMonth(month.monthStart),
+      });
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Unable to load payment transactions."
+      );
+    } finally {
+      setAnnualPaymentLoading(null);
+    }
+  };
 
   const groupRooms = (side: "rooms" | "dormitory") => {
     const selected = report?.rooms ?? [];
@@ -264,6 +449,55 @@ function DailyReport({ user, onBack }: DailyReportProps) {
     );
   };
 
+  const upcomingAdvanceBookings =
+    report?.upcomingAdvanceBookings ??
+    annualReport?.upcomingAdvanceBookings ??
+    [];
+  const renderUpcomingAdvanceBookings = () => (
+    <section className="daily-report-activity">
+      <h2>
+        {language === "mr" ? "आगामी / आगाऊ बुकिंग" : "UPCOMING / ADVANCE BOOKINGS"}
+      </h2>
+      <table>
+        <thead>
+          <tr>
+            <th>{language === "mr" ? "बुकिंग क्र." : "Booking No."}</th>
+            <th>{language === "mr" ? "बुकिंग तपशील" : "Booking Details"}</th>
+            <th>{language === "mr" ? "स्थिती" : "Status"}</th>
+            <th>{language === "mr" ? "मुक्काम" : "Stay"}</th>
+            <th>{language === "mr" ? "खोली / बेड" : "Room / Bed"}</th>
+            <th>{language === "mr" ? "बुकिंग रक्कम" : "Booking Amount"}</th>
+            <th>{language === "mr" ? "भरलेली रक्कम" : "Amount Paid"}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {upcomingAdvanceBookings.map((booking) => (
+            <tr key={booking.bookingReference}>
+              <th scope="row">{booking.bookingReference}</th>
+              <td>
+                <strong>{booking.serviceMember}</strong>
+                <br />
+                {booking.guests} · {booking.guestCount} {language === "mr" ? "अतिथी" : "guest(s)"}
+              </td>
+              <td>{booking.bookingStatus} / {booking.approvalStatus}</td>
+              <td>{formatDate(booking.checkInDate)} – {formatDate(booking.checkOutDate)}</td>
+              <td>{booking.roomDetails}</td>
+              <td>₹{formatAmount(booking.bookingAmount)}</td>
+              <td>₹{formatAmount(booking.amountPaid)}</td>
+            </tr>
+          ))}
+          {upcomingAdvanceBookings.length === 0 && (
+            <tr>
+              <td colSpan={7} className="daily-report-empty">
+                {language === "mr" ? "आगामी आगाऊ बुकिंग नाही." : "No upcoming advance bookings."}
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </section>
+  );
+
   const leftRooms = groupRooms("rooms");
   const rightRooms = groupRooms("dormitory");
   const feedbackReport = report?.feedback ?? [];
@@ -272,20 +506,26 @@ function DailyReport({ user, onBack }: DailyReportProps) {
       ? language === "mr" ? "दैनिक" : "DAILY"
       : reportType === "WEEKLY"
         ? language === "mr" ? "साप्ताहिक" : "WEEKLY"
-        : language === "mr" ? "मासिक" : "MONTHLY";
+        : reportType === "MONTHLY"
+          ? language === "mr" ? "मासिक" : "MONTHLY"
+          : language === "mr" ? "वार्षिक" : "ANNUAL";
   const reportTypeMarathi =
     reportType === "DAILY"
       ? "दैनिक"
       : reportType === "WEEKLY"
         ? "साप्ताहिक"
-        : "मासिक";
+        : reportType === "MONTHLY"
+          ? "मासिक"
+          : "वार्षिक";
 
   return (
-    <main className="daily-report-screen">
+    <main
+      className={`daily-report-screen${paymentPrint ? " daily-report-payment-print-active" : ""}`}
+    >
       <header className="daily-report-toolbar">
         <div>
           <span className="daily-report-eyebrow">
-            {language === "mr" ? "दैनिक अहवाल" : "DAILY REPORT"}
+            {language === "mr" ? `${reportTypeMarathi} अहवाल` : `${reportTypeLabel} REPORT`}
           </span>
           <h1>{language === "mr" ? "ESM विश्रामगृह" : "ESM Rest House"}</h1>
           <p>{user.name} · {user.role}</p>
@@ -293,7 +533,11 @@ function DailyReport({ user, onBack }: DailyReportProps) {
         <div className="daily-report-controls">
           <span className="daily-report-live-status">
             <i aria-hidden="true" />
-            {report?.snapshotSaved
+            {reportType === "ANNUAL"
+              ? language === "mr"
+                ? "आर्थिक वर्षाचा थेट अहवाल"
+                : "Live financial-year report"
+              : report?.snapshotSaved
               ? reportType === "DAILY"
                 ? language === "mr"
                   ? "मागील २४ तासांचा अहवाल · रात्री ९ वाजता जतन"
@@ -334,25 +578,49 @@ function DailyReport({ user, onBack }: DailyReportProps) {
               <option value="DAILY">{language === "mr" ? "दैनिक" : "Daily"}</option>
               <option value="WEEKLY">{language === "mr" ? "साप्ताहिक" : "Weekly"}</option>
               <option value="MONTHLY">{language === "mr" ? "मासिक" : "Monthly"}</option>
+              <option value="ANNUAL">{language === "mr" ? "वार्षिक" : "Annual"}</option>
             </select>
           </label>
-          <label>
-            {reportType === "DAILY"
-              ? language === "mr" ? "तारीख" : "Report date"
-              : reportType === "WEEKLY"
-                ? language === "mr" ? "आठवड्यातील तारीख" : "Date in week"
-                : language === "mr" ? "महिन्यातील तारीख" : "Date in month"}
-            <input
-              type="date"
-              value={date}
-              max={today}
-              onChange={(event) => {
-                hasReport.current = false;
-                setReport(null);
-                setDate(event.target.value);
-              }}
-            />
-          </label>
+          {reportType === "ANNUAL" ? (
+            <label>
+              {language === "mr" ? "आर्थिक वर्ष" : "Financial year"}
+              <select
+                value={financialYearStart}
+                onChange={(event) => {
+                  hasReport.current = false;
+                  setAnnualReport(null);
+                  setFinancialYearStart(Number(event.target.value));
+                }}
+              >
+                {Array.from(
+                  { length: currentFinancialYearStart - 1999 },
+                  (_, index) => currentFinancialYearStart - index
+                ).map((year) => (
+                  <option key={year} value={year}>
+                    FY {year}–{String(year + 1).slice(-2)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <label>
+              {reportType === "DAILY"
+                ? language === "mr" ? "तारीख" : "Report date"
+                : reportType === "WEEKLY"
+                  ? language === "mr" ? "आठवड्यातील तारीख" : "Date in week"
+                  : language === "mr" ? "महिन्यातील तारीख" : "Date in month"}
+              <input
+                type="date"
+                value={date}
+                max={today}
+                onChange={(event) => {
+                  hasReport.current = false;
+                  setReport(null);
+                  setDate(event.target.value);
+                }}
+              />
+            </label>
+          )}
           <button type="button" className="daily-report-secondary" onClick={onBack}>
             {language === "mr" ? "डॅशबोर्ड" : "Dashboard"}
           </button>
@@ -360,7 +628,7 @@ function DailyReport({ user, onBack }: DailyReportProps) {
             type="button"
             className="daily-report-primary"
             onClick={() => window.print()}
-            disabled={!report || loading}
+            disabled={(!report && !annualReport) || loading}
           >
             {language === "mr" ? "प्रिंट / PDF जतन करा" : "Print / Save as PDF"}
           </button>
@@ -489,6 +757,7 @@ function DailyReport({ user, onBack }: DailyReportProps) {
               </tbody>
             </table>
           </section>
+          {renderUpcomingAdvanceBookings()}
           {reportType === "MONTHLY" && (
             <section className="daily-report-payment-summary">
               <h2>
@@ -499,10 +768,30 @@ function DailyReport({ user, onBack }: DailyReportProps) {
               <div>
                 <strong>{language === "mr" ? "रोख जमा" : "CASH COLLECTED"}</strong>
                 <span>₹{formatAmount(report.payments.cash)}</span>
+                <button
+                  type="button"
+                  className="daily-report-transaction-print"
+                  onClick={() => void printPaymentTransactions("CASH")}
+                  disabled={printingPaymentMethod !== null}
+                >
+                  {printingPaymentMethod === "CASH"
+                    ? language === "mr" ? "व्यवहार लोड होत आहेत..." : "Loading transactions..."
+                    : language === "mr" ? "रोख व्यवहार प्रिंट करा" : "Print cash transactions"}
+                </button>
               </div>
               <div>
                 <strong>{language === "mr" ? "UPI जमा" : "UPI COLLECTED"}</strong>
                 <span>₹{formatAmount(report.payments.upi)}</span>
+                <button
+                  type="button"
+                  className="daily-report-transaction-print"
+                  onClick={() => void printPaymentTransactions("UPI")}
+                  disabled={printingPaymentMethod !== null}
+                >
+                  {printingPaymentMethod === "UPI"
+                    ? language === "mr" ? "व्यवहार लोड होत आहेत..." : "Loading transactions..."
+                    : language === "mr" ? "UPI व्यवहार प्रिंट करा" : "Print UPI transactions"}
+                </button>
               </div>
               <div>
                 <strong>{language === "mr" ? "एकूण रोख + UPI" : "TOTAL CASH + UPI"}</strong>
@@ -574,6 +863,227 @@ function DailyReport({ user, onBack }: DailyReportProps) {
             {formatDateTime(report.generatedAt)}
           </footer>
         </article>
+      )}
+      {annualReport && reportType === "ANNUAL" && !loading && (
+        <article className="daily-report-printable annual-report-printable">
+          <header className="daily-report-sheet-header">
+            <h1>
+              {language === "mr"
+                ? "ESM विश्रामगृह वार्षिक आर्थिक अहवाल"
+                : "ANNUAL FINANCIAL REPORT · ESM REST HOUSE"}
+            </h1>
+            <p>
+              {language === "mr" ? "आर्थिक वर्ष:" : "FINANCIAL YEAR:"}{" "}
+              {annualReport.financialYearStart}–{annualReport.financialYearStart + 1}
+            </p>
+            <p className="daily-report-period">
+              {formatDate(annualReport.periodStart)} – {formatDate(annualReport.periodEnd)}
+            </p>
+          </header>
+
+          <section className="annual-report-section">
+            <h2>{language === "mr" ? "महिन्यानुसार जमा" : "MONTHLY COLLECTION SUMMARY"}</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th>{language === "mr" ? "महिना" : "Month"}</th>
+                  <th>{language === "mr" ? "रोख एकूण" : "Cash Total"}</th>
+                  <th>{language === "mr" ? "UPI एकूण" : "UPI Total"}</th>
+                  <th>{language === "mr" ? "एकूण जमा" : "Total Collection"}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {annualReport.monthly.map((month) => (
+                  <tr key={month.monthStart}>
+                    <th scope="row">{formatMonth(month.monthStart)}</th>
+                    <td>
+                      <button
+                        type="button"
+                        className="annual-report-amount-button"
+                        disabled={annualPaymentLoading !== null}
+                        onClick={() => void openAnnualPaymentDetails(month, "CASH")}
+                      >
+                        ₹{formatAmount(month.cashTotal)}
+                      </button>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="annual-report-amount-button"
+                        disabled={annualPaymentLoading !== null}
+                        onClick={() => void openAnnualPaymentDetails(month, "UPI")}
+                      >
+                        ₹{formatAmount(month.upiTotal)}
+                      </button>
+                    </td>
+                    <td className="annual-report-money">
+                      ₹{formatAmount(month.totalCollection)}
+                    </td>
+                  </tr>
+                ))}
+                <tr className="daily-report-total-row">
+                  <th scope="row">{language === "mr" ? "आर्थिक वर्ष एकूण" : "FINANCIAL YEAR TOTAL"}</th>
+                  <td>₹{formatAmount(annualReport.totals.cash)}</td>
+                  <td>₹{formatAmount(annualReport.totals.upi)}</td>
+                  <td>₹{formatAmount(annualReport.totals.totalCollection)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section className="annual-report-section annual-report-movement">
+            <h2>{language === "mr" ? "अतिथी आवक-जावक सारांश" : "MONTHLY GUEST MOVEMENT · M / F / CHILD / TOTAL"}</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th>{language === "mr" ? "महिना" : "Month"}</th>
+                  <th>{language === "mr" ? "चेक-इन · पु / स्त्री / बालक / एकूण" : "Check-ins · M / F / Child / Total"}</th>
+                  <th>{language === "mr" ? "चेक-आउट · पु / स्त्री / बालक / एकूण" : "Check-outs · M / F / Child / Total"}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {annualReport.monthly.map((month) => (
+                  <tr key={month.monthStart}>
+                    <th scope="row">{formatMonth(month.monthStart)}</th>
+                    <td>
+                      {month.checkIns.male} / {month.checkIns.female} / {month.checkIns.children} / {month.checkIns.total}
+                    </td>
+                    <td>
+                      {month.checkOuts.male} / {month.checkOuts.female} / {month.checkOuts.children} / {month.checkOuts.total}
+                    </td>
+                  </tr>
+                ))}
+                <tr className="daily-report-total-row">
+                  <th scope="row">{language === "mr" ? "आर्थिक वर्ष एकूण" : "FINANCIAL YEAR TOTAL"}</th>
+                  <td>
+                    {annualReport.totals.checkIns.male} / {annualReport.totals.checkIns.female} / {annualReport.totals.checkIns.children} / {annualReport.totals.checkIns.total}
+                  </td>
+                  <td>
+                    {annualReport.totals.checkOuts.male} / {annualReport.totals.checkOuts.female} / {annualReport.totals.checkOuts.children} / {annualReport.totals.checkOuts.total}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+          {renderUpcomingAdvanceBookings()}
+          <footer className="daily-report-sheet-footer">
+            {language === "mr" ? "अहवाल तयार केला:" : "Report generated"}{" "}
+            {formatDateTime(new Date().toISOString())}
+          </footer>
+        </article>
+      )}
+      {paymentPrint && (report || annualReport) && (
+        <article className="daily-report-payment-printable">
+          <header className="daily-report-payment-print-header">
+            <h1>
+              {language === "mr"
+                ? `ESM विश्रामगृह · ${paymentPrint.method === "CASH" ? "रोख" : "UPI"} जमा व्यवहार`
+                : `ESM REST HOUSE · ${paymentPrint.method} COLLECTION TRANSACTIONS`}
+            </h1>
+            <p>
+              {language === "mr" ? "महिना:" : "MONTH:"} {paymentPrint.monthLabel}
+            </p>
+          </header>
+          <table>
+            <thead>
+              <tr>
+                <th>{language === "mr" ? "दिनांक" : "Date"}</th>
+                <th>{language === "mr" ? "वेळ" : "Time"}</th>
+                <th>{language === "mr" ? "बुकिंग क्र." : "Booking No."}</th>
+                <th>{language === "mr" ? "अतिथीचे नाव" : "Guest Name"}</th>
+                <th>{language === "mr" ? "रक्कम (₹)" : "Amount (₹)"}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paymentPrint.transactions.map((transaction, index) => (
+                <tr key={`${transaction.bookingReference}-${transaction.paymentDate}-${transaction.paymentTime}-${index}`}>
+                  <td>{formatDate(transaction.paymentDate)}</td>
+                  <td>{transaction.paymentTime}</td>
+                  <td>{transaction.bookingReference}</td>
+                  <td>{transaction.guestName}</td>
+                  <td className="daily-report-payment-amount">
+                    {formatAmount(transaction.amount)}
+                  </td>
+                </tr>
+              ))}
+              {paymentPrint.transactions.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="daily-report-empty">
+                    {language === "mr"
+                      ? "या महिन्यात यशस्वी व्यवहार नोंदलेले नाहीत"
+                      : "No successful transactions recorded for this month"}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+            <tfoot>
+              <tr>
+                <th colSpan={4}>{language === "mr" ? "एकूण जमा" : "TOTAL COLLECTED"}</th>
+                <th className="daily-report-payment-amount">
+                  ₹{formatAmount(paymentPrint.total)}
+                </th>
+              </tr>
+            </tfoot>
+          </table>
+          <footer className="daily-report-sheet-footer">
+            {language === "mr" ? "अहवाल तयार केला:" : "Report generated"}{" "}
+            {formatDateTime(new Date().toISOString())}
+          </footer>
+        </article>
+      )}
+      {annualPaymentDetails && (
+        <AppModal
+          type="info"
+          title={`${annualPaymentDetails.method} · ${annualPaymentDetails.monthLabel}`}
+          onClose={() => setAnnualPaymentDetails(null)}
+          showCancel={false}
+          closeOnOverlayClick
+        >
+          <div className="annual-payment-details">
+            <table>
+              <thead>
+                <tr>
+                  <th>{language === "mr" ? "दिनांक" : "Date"}</th>
+                  <th>{language === "mr" ? "वेळ" : "Time"}</th>
+                  <th>{language === "mr" ? "बुकिंग क्र." : "Booking No."}</th>
+                  <th>{language === "mr" ? "अतिथी" : "Guest Name"}</th>
+                  <th>{language === "mr" ? "रक्कम" : "Amount"}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {annualPaymentDetails.transactions.map((transaction, index) => (
+                  <tr key={`${transaction.bookingReference}-${transaction.paymentDate}-${transaction.paymentTime}-${index}`}>
+                    <td>{formatDate(transaction.paymentDate)}</td>
+                    <td>{transaction.paymentTime}</td>
+                    <td>{transaction.bookingReference}</td>
+                    <td>{transaction.guestName}</td>
+                    <td>₹{formatAmount(transaction.amount)}</td>
+                  </tr>
+                ))}
+                {annualPaymentDetails.transactions.length === 0 && (
+                  <tr>
+                    <td colSpan={5}>
+                      {language === "mr" ? "यशस्वी व्यवहार नोंदलेले नाहीत" : "No successful transactions recorded"}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <th colSpan={4}>{language === "mr" ? "एकूण जमा" : "TOTAL COLLECTED"}</th>
+                  <th>₹{formatAmount(annualPaymentDetails.total)}</th>
+                </tr>
+              </tfoot>
+            </table>
+            <button
+              type="button"
+              className="daily-report-primary annual-payment-print-button"
+              onClick={() => setPaymentPrint(annualPaymentDetails)}
+            >
+              {language === "mr" ? "व्यवहार प्रिंट / PDF" : "Print / Save transactions PDF"}
+            </button>
+          </div>
+        </AppModal>
       )}
     </main>
   );

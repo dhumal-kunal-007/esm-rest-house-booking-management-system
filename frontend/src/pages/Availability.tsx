@@ -34,6 +34,8 @@ export interface Room {
   currentStatus?: string;
   isUnderMaintenance?: boolean;
   totalBeds?: number;
+  allowedGender?: string | null;
+  usage?: string;
   assignments?: RoomAssignment[];
   beds: Bed[];
 }
@@ -42,6 +44,9 @@ interface RoomCapacity {
   room_id: string;
   room_capacity: number | string | null;
   bed_capacity: number | string | null;
+  esm_room_rate: number | string | null;
+  serving_room_rate: number | string | null;
+  civilian_room_rate: number | string | null;
 }
 
 interface BookingDocument {
@@ -121,9 +126,16 @@ const isAcRoom = (room: Room): boolean => {
   const name = normalize(room.name);
   const category = normalize(room.category);
 
+  if (isVipRoom(room)) {
+    return false;
+  }
+
+  if (category) {
+    return category === "AC";
+  }
+
   return (
-    (name.startsWith("AC") && !name.includes("VIP")) ||
-    category === "AC"
+    name.startsWith("AC") && !name.includes("VIP")
   );
 };
 
@@ -302,12 +314,14 @@ function Availability({
   useEffect(() => {
     let cancelled = false;
 
-    const loadRooms = async () => {
+    const loadRooms = async (silent = false) => {
       try {
-        setIsLoadingRooms(true);
+        if (!silent) {
+          setIsLoadingRooms(true);
+        }
         setRoomError("");
 
-        if (!booking) {
+        if (!booking && !silent) {
           setSelectedBeds([]);
           setUnavailableRoomId(null);
         }
@@ -343,7 +357,9 @@ function Availability({
           ? `http://localhost:5000/api/rooms/authority-rooms?${dateQuery}`
           : `http://localhost:5000/api/rooms?${dateQuery}`;
 
-        const response = await apiFetch(endpoint);
+        const response = await apiFetch(endpoint, {
+          cache: "no-store",
+        });
 
         const data = await response.json();
 
@@ -377,6 +393,8 @@ function Availability({
               is_other_authority_room?: boolean;
               current_status?: string;
               is_under_maintenance?: boolean;
+              allowed_gender?: string | null;
+              room_usage?: string;
               assignments?: RoomAssignment[];
             }) => {
               const bedQuery =
@@ -385,7 +403,8 @@ function Availability({
                   : "";
 
               const bedsResponse = await apiFetch(
-                `http://localhost:5000/api/rooms/${room.id}/beds${bedQuery}`
+                `http://localhost:5000/api/rooms/${room.id}/beds${bedQuery}`,
+                { cache: "no-store" }
               );
 
               const bedsData = await bedsResponse.json();
@@ -460,6 +479,8 @@ function Availability({
                 isUnderMaintenance:
                   Boolean(room.is_under_maintenance),
                 totalBeds: room.total_beds,
+                allowedGender: room.allowed_gender ?? null,
+                usage: room.room_usage ?? "GUEST",
                 assignments:
                   room.assignments || [],
                 beds,
@@ -468,60 +489,64 @@ function Availability({
           )
         );
 
-        try {
-          const capacityResponse = await apiFetch(
-            "http://localhost:5000/api/rooms/capacities"
-          );
-          const capacityData = await capacityResponse.json();
-          if (!capacityResponse.ok || !capacityData.success) {
-            throw new Error(
-              capacityData.message || "Unable to load room capacity settings."
-            );
-          }
-          if (!cancelled) {
-            setRoomCapacities(
-              Array.isArray(capacityData.capacities)
-                ? capacityData.capacities
-                : []
-            );
-            setCapacityError("");
-          }
-        } catch (error) {
-          if (!cancelled) {
-            setCapacityError(
-              error instanceof Error
-                ? error.message
-                : "Unable to load room capacity settings."
-            );
-          }
-        }
-
-        if (booking?.id) {
+        if (!silent) {
           try {
-            const documentsResponse = await apiFetch(
-              `http://localhost:5000/api/bookings/${booking.id}/documents`
+            const capacityResponse = await apiFetch(
+              "http://localhost:5000/api/rooms/capacities",
+              { cache: "no-store" }
             );
-            const documentsData = await documentsResponse.json();
-            if (!documentsResponse.ok || !documentsData.success) {
+            const capacityData = await capacityResponse.json();
+            if (!capacityResponse.ok || !capacityData.success) {
               throw new Error(
-                documentsData.message || "Unable to load booking documents."
+                capacityData.message || "Unable to load room capacity settings."
               );
             }
             if (!cancelled) {
-              setBookingDocuments(
-                Array.isArray(documentsData.documents)
-                  ? documentsData.documents
+              setRoomCapacities(
+                Array.isArray(capacityData.capacities)
+                  ? capacityData.capacities
                   : []
               );
-              setDocumentsError("");
+              setCapacityError("");
             }
           } catch (error) {
             if (!cancelled) {
-              setDocumentsError(
+              setCapacityError(
                 error instanceof Error
                   ? error.message
-                  : "Unable to load booking documents."
+                  : "Unable to load room capacity settings."
               );
+            }
+          }
+
+          if (booking?.id) {
+            try {
+              const documentsResponse = await apiFetch(
+                `http://localhost:5000/api/bookings/${booking.id}/documents`,
+                { cache: "no-store" }
+              );
+              const documentsData = await documentsResponse.json();
+              if (!documentsResponse.ok || !documentsData.success) {
+                throw new Error(
+                  documentsData.message || "Unable to load booking documents."
+                );
+              }
+              if (!cancelled) {
+                setBookingDocuments(
+                  Array.isArray(documentsData.documents)
+                    ? documentsData.documents
+                    : []
+                );
+                setDocumentsError("");
+              }
+            } catch (error) {
+              if (!cancelled) {
+                setDocumentsError(
+                  error instanceof Error
+                    ? error.message
+                    : "Unable to load booking documents."
+                );
+              }
             }
           }
         }
@@ -551,8 +576,24 @@ function Availability({
 
     loadRooms();
 
+    const refreshRooms = () => {
+      if (document.visibilityState === "visible") {
+        void loadRooms(true);
+      }
+    };
+
+    const refreshTimer = window.setInterval(
+      refreshRooms,
+      30000
+    );
+    window.addEventListener("focus", refreshRooms);
+    document.addEventListener("visibilitychange", refreshRooms);
+
     return () => {
       cancelled = true;
+      window.clearInterval(refreshTimer);
+      window.removeEventListener("focus", refreshRooms);
+      document.removeEventListener("visibilitychange", refreshRooms);
     };
   }, [
     role,
@@ -869,6 +910,30 @@ function Availability({
     return capacities.length > 0
       ? Math.min(...capacities)
       : room.totalBeds ?? room.beds.length;
+  };
+
+  const renderRoomRates = (room: Room) => {
+    const rateCard = roomCapacities.find(
+      (item) => item.room_id === room.id
+    );
+    const formatRate = (value: number | string | null | undefined) => {
+      const amount = Number(value);
+      return value === null || value === undefined || !Number.isFinite(amount) || amount <= 0
+        ? tr("Not configured", "दर सेट केलेला नाही")
+        : `₹${amount.toLocaleString("en-IN", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })}`;
+    };
+
+    return (
+      <div className="room-rate-facts">
+        <strong>{tr("Per night", "प्रति रात्र")}</strong>
+        <span>ESM: {formatRate(rateCard?.esm_room_rate)}</span>
+        <span>{tr("Serving", "सेवारत")}: {formatRate(rateCard?.serving_room_rate)}</span>
+        <span>{tr("Civilian", "नागरिक")}: {formatRate(rateCard?.civilian_room_rate)}</span>
+      </div>
+    );
   };
 
   const hasWholeRoomSelection = Boolean(selectedWholeRoom);
@@ -1375,6 +1440,7 @@ function Availability({
 
   const renderWholeRoomCard = (room: Room) => {
     const status = getRoomStatus(room);
+    const capacity = getConfiguredOccupantCapacity(room);
 
     const selected =
       selectedWholeRoomId === room.id;
@@ -1451,6 +1517,23 @@ function Availability({
             </button>
           </div>
         </div>
+
+        <div className="room-capacity-facts">
+          <span>
+            {tr("Bed capacity", "बेड क्षमता")}: {capacity}
+          </span>
+          {room.allowedGender && (
+            <span>
+              {room.allowedGender === "MALE"
+                ? tr("Male only", "फक्त पुरुष")
+                : tr("Female only", "फक्त महिला")}
+            </span>
+          )}
+          {room.usage && room.usage !== "GUEST" && (
+            <span>{room.usage.replaceAll("_", " ")}</span>
+          )}
+        </div>
+        {renderRoomRates(room)}
 
         {booking ? (
           <div
@@ -1534,6 +1617,7 @@ function Availability({
 
   const renderBedRoom = (room: Room) => {
     const status = getRoomStatus(room);
+    const capacity = getConfiguredOccupantCapacity(room);
 
     return (
       <div
@@ -1603,6 +1687,23 @@ function Availability({
             </button>
           </div>
         </div>
+
+        <div className="room-capacity-facts">
+          <span>
+            {tr("Bed capacity", "बेड क्षमता")}: {capacity}
+          </span>
+          {room.allowedGender && (
+            <span>
+              {room.allowedGender === "MALE"
+                ? tr("Male only", "फक्त पुरुष")
+                : tr("Female only", "फक्त महिला")}
+            </span>
+          )}
+          {room.usage && room.usage !== "GUEST" && (
+            <span>{room.usage.replaceAll("_", " ")}</span>
+          )}
+        </div>
+        {renderRoomRates(room)}
 
         <div className="bed-grid">
           {room.beds.map((bed) => {

@@ -15,6 +15,7 @@ import { useLanguage } from "../i18n/LanguageContext";
 interface CheckInProps {
   userId: string;
   userName: string;
+  userRole?: string;
   onBack: () => void;
 }
 
@@ -35,6 +36,7 @@ interface AllottedGuest {
   bed_number: number | null;
   check_in_date: string;
   expected_check_out_date: string;
+  check_in_available: boolean;
   approval_status: string;
   allotment_status: string;
   check_in_status:
@@ -49,6 +51,7 @@ interface AllottedGuest {
 function CheckIn({
   userId,
   userName,
+  userRole,
   onBack,
 }: CheckInProps) {
   const { language, setLanguage } =
@@ -91,6 +94,28 @@ function CheckIn({
       title: string;
       message: string;
     } | null>(null);
+
+  const [manualCheckInGuest, setManualCheckInGuest] =
+    useState<AllottedGuest | null>(null);
+
+  const [manualCheckInDate, setManualCheckInDate] =
+    useState(
+      new Date().toISOString().slice(0, 10)
+    );
+
+  const [manualCheckInTime, setManualCheckInTime] =
+    useState("12:00");
+
+  const [manualAmount, setManualAmount] =
+    useState("");
+
+  const [manualRemarks, setManualRemarks] =
+    useState("");
+
+  const [manualCheckInLoading, setManualCheckInLoading] =
+    useState(false);
+
+  const isAdmin = userRole === "ADMIN";
 
   /* =========================================
      LOAD ELIGIBLE GUESTS
@@ -219,6 +244,9 @@ function CheckIn({
                   ""
               ),
 
+            check_in_available:
+              guest.check_in_available === true,
+
             approval_status:
               String(
                 guest.approval_status ??
@@ -284,6 +312,10 @@ function CheckIn({
   const openCheckInConfirmation = (
     guest: AllottedGuest
   ) => {
+    if (!guest.check_in_available) {
+      return;
+    }
+
     setError("");
     setSelectedGuest(guest);
   };
@@ -439,6 +471,109 @@ Accommodation: Full Room`,
     }
   };
 
+  const submitManualCheckIn = async () => {
+    if (!manualCheckInGuest) {
+      return;
+    }
+
+    if (!manualCheckInDate) {
+      setResultModal({
+        type: "error",
+        title: tr(
+          "Check-In Date Required",
+          "चेक-इन तारीख आवश्यक आहे"
+        ),
+        message: tr(
+          "Please enter the guest's actual check-in date.",
+          "कृपया अतिथीची वास्तविक चेक-इन तारीख भरा."
+        ),
+      });
+      return;
+    }
+
+    setManualCheckInLoading(true);
+
+    try {
+      const response = await apiFetch(
+        "http://localhost:5000/api/check-ins/manual",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            allotment_id: manualCheckInGuest.allotment_id,
+            booking_id: manualCheckInGuest.booking_id,
+            guest_id: manualCheckInGuest.guest_id,
+            room_id: manualCheckInGuest.room_id,
+            bed_id: manualCheckInGuest.bed_id,
+            checked_in_by: userId,
+            actual_check_in_date: manualCheckInDate,
+            actual_check_in_time: manualCheckInTime,
+            amount: manualAmount.trim() ? Number(manualAmount) : null,
+            payment_method: "CASH",
+            remarks: manualRemarks.trim() || "Manual pre-checkin entry created by admin.",
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setResultModal({
+          type: "error",
+          title: tr(
+            "Pre-Checkin Failed",
+            "प्री-चेक-इन अयशस्वी"
+          ),
+          message:
+            data?.message ||
+            tr(
+              "Unable to record the manual check-in.",
+              "मॅन्युअल चेक-इन नोंदवता आले नाही."
+            ),
+        });
+        return;
+      }
+
+      setManualCheckInGuest(null);
+      setManualCheckInDate(new Date().toISOString().slice(0, 10));
+      setManualCheckInTime("12:00");
+      setManualAmount("");
+      setManualRemarks("");
+
+      setResultModal({
+        type: "success",
+        title: tr(
+          "Pre-Checkin Recorded",
+          "प्री-चेक-इन नोंदवले"
+        ),
+        message: tr(
+          "The guest's check-in has been recorded on the selected actual arrival date, so daily accounting will reflect the correct date.",
+          "अतिथीचे चेक-इन निवडलेली वास्तविक आगमन तारीखावर नोंदवले गेले आहे, त्यामुळे दररोजची हिशोब पद्धत योग्य तारीखवर दिसेल."
+        ),
+      });
+
+      await loadGuests();
+    } catch (error) {
+      console.error("Manual pre-checkin error:", error);
+      setResultModal({
+        type: "error",
+        title: tr(
+          "Pre-Checkin Server Error",
+          "प्री-चेक-इन सर्व्हर त्रुटी"
+        ),
+        message: tr(
+          "Unable to connect to the check-in service. Please try again.",
+          "चेक-इन सेवेशी कनेक्ट करता आले नाही. कृपया पुन्हा प्रयत्न करा."
+        ),
+      });
+    } finally {
+      setManualCheckInLoading(false);
+    }
+  };
+
   /* =========================================
      SEARCH
   ========================================= */
@@ -492,7 +627,8 @@ Accommodation: Full Room`,
     guests.filter(
       (guest) =>
         guest.check_in_status ===
-        "NOT_CHECKED_IN"
+        "NOT_CHECKED_IN" &&
+        guest.check_in_available
     ).length;
 
   const checkedInCount =
@@ -741,6 +877,21 @@ Accommodation: Full Room`,
           cursor: not-allowed;
         }
 
+        .precheckin-button {
+          height: 42px;
+          padding: 0 17px;
+          border: 1px solid #cbd5e1;
+          border-radius: 9px;
+          background: linear-gradient(135deg, #0f766e, #115e59);
+          color: #ffffff;
+          font-weight: 700;
+          cursor: pointer;
+        }
+
+        .precheckin-button:hover {
+          background: linear-gradient(135deg, #115e59, #0f766e);
+        }
+
         .checkin-error {
           background: #fff1f2;
           border: 1px solid #fecdd3;
@@ -862,6 +1013,18 @@ Accommodation: Full Room`,
           height: 6px;
           border-radius: 50%;
           background: #f97316;
+        }
+
+        .status-scheduled {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 6px 10px;
+          border-radius: 999px;
+          background: #eff6ff;
+          color: #1d4ed8;
+          font-size: 11px;
+          font-weight: 750;
         }
 
         .status-checked {
@@ -1376,6 +1539,39 @@ Accommodation: Full Room`,
                 )}`}
           </button>
 
+          {isAdmin && (
+            <button
+              type="button"
+              className="precheckin-button"
+              disabled={loading || manualCheckInLoading}
+              onClick={() => {
+                const guestToPreCheckIn = filteredGuests[0] ?? guests[0];
+                if (!guestToPreCheckIn) {
+                  setResultModal({
+                    type: "info",
+                    title: tr(
+                      "No Guest Available for Pre-Checkin",
+                      "प्री-चेक-इनसाठी अतिथी उपलब्ध नाही"
+                    ),
+                    message: tr(
+                      "There are no eligible guests to pre-check in. The booking must be approved and accepted, have an active room allotment, and have a successful payment with an invoice. Complete those steps, then refresh this page.",
+                      "प्री-चेक-इनसाठी पात्र अतिथी नाहीत. बुकिंग मंजूर व स्वीकारलेले असणे, सक्रिय खोलीचे अलॉटमेंट आणि यशस्वी पेमेंटसह इनव्हॉइस असणे आवश्यक आहे. ही प्रक्रिया पूर्ण करून हे पेज रिफ्रेश करा."
+                    ),
+                  });
+                  return;
+                }
+
+                setManualCheckInGuest(guestToPreCheckIn);
+                setManualCheckInDate(new Date().toISOString().slice(0, 10));
+                setManualCheckInTime("12:00");
+                setManualAmount("");
+                setManualRemarks("");
+              }}
+            >
+              {tr("Pre-Checkin", "प्री-चेक-इन")}
+            </button>
+          )}
+
         </section>
 
         {/* =====================================
@@ -1642,10 +1838,10 @@ Accommodation: Full Room`,
 
                           ) : (
 
-                            <span className="status-ready">
+                            <span className={guest.check_in_available ? "status-ready" : "status-scheduled"}>
                               {tr(
-                                "READY",
-                                "तयार"
+                                guest.check_in_available ? "READY" : "SCHEDULED",
+                                guest.check_in_available ? "तयार" : "तारीख बाकी"
                               )}
                             </span>
 
@@ -1667,25 +1863,38 @@ Accommodation: Full Room`,
                             </span>
 
                           ) : (
+                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                              <button
+                                type="button"
+                                className="checkin-action"
+                                disabled={
+                                  !guest.check_in_available ||
+                                  processingId ===
+                                  guest.allotment_id
+                                }
+                                onClick={() =>
+                                  openCheckInConfirmation(
+                                    guest
+                                  )
+                                }
+                              >
+                                {tr(
+                                  guest.check_in_available ? "Check-In" : "Check-In Scheduled",
+                                  guest.check_in_available ? "चेक-इन" : "चेक-इनची तारीख बाकी"
+                                )}
+                              </button>
 
-                            <button
-                              type="button"
-                              className="checkin-action"
-                              disabled={
-                                processingId ===
-                                guest.allotment_id
-                              }
-                              onClick={() =>
-                                openCheckInConfirmation(
-                                  guest
-                                )
-                              }
-                            >
-                              {tr(
-                                "Check-In",
-                                "चेक-इन"
+                              {isAdmin && (
+                                <button
+                                  type="button"
+                                  className="precheckin-button"
+                                  style={{ height: 34, padding: "0 12px" }}
+                                  onClick={() => setManualCheckInGuest(guest)}
+                                >
+                                  {tr("Pre-Checkin", "प्री-चेक-इन")}
+                                </button>
                               )}
-                            </button>
+                            </div>
 
                           )}
 
@@ -1975,6 +2184,164 @@ Accommodation: Full Room`,
       {/* =====================================
           RESULT MODAL
       ===================================== */}
+
+      {manualCheckInGuest && (
+        <div
+          className="checkin-modal-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setManualCheckInGuest(null);
+            }
+          }}
+        >
+          <section
+            className="checkin-modal"
+            role="dialog"
+            aria-modal="true"
+          >
+            <header className="checkin-modal-header">
+              <div className="checkin-modal-title">
+                <div className="checkin-modal-icon">⏱</div>
+                <h2>
+                  {tr("Manual Pre-Checkin", "मॅन्युअल प्री-चेक-इन")}
+                </h2>
+              </div>
+              <button
+                type="button"
+                className="checkin-modal-close"
+                onClick={() => setManualCheckInGuest(null)}
+                disabled={manualCheckInLoading}
+              >
+                ×
+              </button>
+            </header>
+
+            <div className="checkin-modal-body">
+              <p className="checkin-modal-intro">
+                {tr(
+                  "Use this option when a guest has already arrived but the check-in entry was missed. The selected arrival date will be used for accounting and reporting.",
+                  "जेव्हा अतिथी आधीच पोहोचला असतो पण चेक-इन नोंद चुकली असेल, तेव्हा हे पर्याय वापरा. निवडलेली आगमन तारीख हिशोब आणि रिपोर्टिंगसाठी वापरली जाईल."
+                )}
+              </p>
+
+              <div className="checkin-details">
+                <div className="checkin-detail">
+                  <span className="checkin-detail-label">{tr("Guest", "अतिथी")}</span>
+                  <span className="checkin-detail-value">{manualCheckInGuest.guest_name}</span>
+                </div>
+
+                <div className="checkin-detail">
+                  <span className="checkin-detail-label">{tr("Booking", "बुकिंग")}</span>
+                  <span className="checkin-detail-value">{manualCheckInGuest.booking_reference}</span>
+                </div>
+
+                <div className="checkin-detail">
+                  <span className="checkin-detail-label">{tr("Room", "खोली")}</span>
+                  <span className="checkin-detail-value">{manualCheckInGuest.room_number}</span>
+                </div>
+
+                <div className="checkin-detail">
+                  <span className="checkin-detail-label">{tr("Bed", "बेड")}</span>
+                  <span className="checkin-detail-value">
+                    {manualCheckInGuest.bed_number !== null ? `Bed ${manualCheckInGuest.bed_number}` : tr("Full Room", "पूर्ण खोली")}
+                  </span>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 18, display: "grid", gap: 12 }}>
+                <label style={{ display: "grid", gap: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#475569" }}>{tr("Actual Check-In Date", "वास्तविक चेक-इन तारीख")}</span>
+                  <input
+                    type="date"
+                    value={manualCheckInDate}
+                    onChange={(event) => setManualCheckInDate(event.target.value)}
+                    style={{
+                      height: 38,
+                      border: "1px solid #cbd5e1",
+                      borderRadius: 8,
+                      padding: "0 10px",
+                    }}
+                  />
+                </label>
+
+                <label style={{ display: "grid", gap: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#475569" }}>{tr("Actual Check-In Time", "वास्तविक चेक-इन वेळ")}</span>
+                  <input
+                    type="time"
+                    value={manualCheckInTime}
+                    onChange={(event) => setManualCheckInTime(event.target.value)}
+                    style={{
+                      height: 38,
+                      border: "1px solid #cbd5e1",
+                      borderRadius: 8,
+                      padding: "0 10px",
+                    }}
+                  />
+                </label>
+
+                <label style={{ display: "grid", gap: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#475569" }}>{tr("Amount (Optional)", "रक्कम (पर्यायी)")}</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={manualAmount}
+                    onChange={(event) => setManualAmount(event.target.value)}
+                    placeholder="0.00"
+                    style={{
+                      height: 38,
+                      border: "1px solid #cbd5e1",
+                      borderRadius: 8,
+                      padding: "0 10px",
+                    }}
+                  />
+                </label>
+
+                <label style={{ display: "grid", gap: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#475569" }}>{tr("Remarks", "टिप्पणी")}</span>
+                  <textarea
+                    rows={3}
+                    value={manualRemarks}
+                    onChange={(event) => setManualRemarks(event.target.value)}
+                    placeholder={tr(
+                      "Describe why this manual pre-checkin is being recorded.",
+                      "हे मॅन्युअल प्री-चेक-इन का नोंदवले जात आहे ते सांगा."
+                    )}
+                    style={{
+                      border: "1px solid #cbd5e1",
+                      borderRadius: 8,
+                      padding: "10px",
+                      resize: "vertical",
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+
+            <footer className="checkin-modal-footer">
+              <button
+                type="button"
+                className="modal-cancel-button"
+                onClick={() => setManualCheckInGuest(null)}
+                disabled={manualCheckInLoading}
+              >
+                {tr("Cancel", "रद्द करा")}
+              </button>
+
+              <button
+                type="button"
+                className="modal-confirm-button"
+                onClick={submitManualCheckIn}
+                disabled={manualCheckInLoading}
+              >
+                {manualCheckInLoading
+                  ? tr("Recording...", "नोंद होत आहे...")
+                  : tr("Save Pre-Checkin", "प्री-चेक-इन सेव्ह करा")}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
 
       {resultModal && (
 

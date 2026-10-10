@@ -854,7 +854,8 @@ router.post(
           `
           SELECT
             bg.guest_id,
-            g.guest_name
+            g.guest_name,
+            g.gender
 
           FROM booking_guests bg
 
@@ -881,6 +882,15 @@ router.post(
               row.guest_id
           )
         );
+
+      const bookingGuestGenders = new Map<string, string>(
+        bookingGuestsResult.rows.map(
+          (row: { guest_id: string; gender: string | null }) => [
+            row.guest_id,
+            String(row.gender ?? "").trim().toUpperCase(),
+          ]
+        )
+      );
 
 
       /* ===================================
@@ -996,6 +1006,7 @@ router.post(
               r.room_status,
               r.is_active,
               r.total_beds,
+              r.allowed_gender,
               rc.category_name
 
             FROM rooms r
@@ -1037,6 +1048,15 @@ router.post(
             `Room ${room.room_number} is inactive.`
           );
 
+        }
+
+        if (
+          room.allowed_gender &&
+          bookingGuestGenders.get(guestId) !== room.allowed_gender
+        ) {
+          throw new Error(
+            `Room ${room.room_number} is reserved for ${room.allowed_gender.toLowerCase()} guests only.`
+          );
         }
 
 

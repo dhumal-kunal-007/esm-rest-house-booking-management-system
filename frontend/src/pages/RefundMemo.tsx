@@ -352,14 +352,14 @@ function RefundMemo({
           !bankAccountHolder.trim() ||
           !bankName.trim() ||
           !bankBranch.trim() ||
-          !/^\d{6,18}$/.test(bankAccountNumber.trim()) ||
-          !/^[A-Z]{4}0[A-Z0-9]{6}$/i.test(bankIfsc.trim())
+          !bankAccountNumber.trim() ||
+          !bankIfsc.trim()
         )
       ) {
         window.alert(
           tr(
-            "Complete all bank details. Account number must contain 6–18 digits and IFSC must be valid.",
-            "सर्व बँक तपशील भरा. खाते क्रमांक ६–१८ अंकांचा आणि IFSC वैध असावा."
+            "Complete all bank details.",
+            "सर्व बँक तपशील भरा."
           )
         );
         return false;
@@ -1429,17 +1429,15 @@ function RefundMemo({
           <div className="form-field">
             <label>{tr("Account number", "खाते क्रमांक")}</label>
             <input
-              inputMode="numeric"
               value={bankAccountNumber}
-              onChange={(event) => setBankAccountNumber(event.target.value.replace(/\D/g, ""))}
+              onChange={(event) => setBankAccountNumber(event.target.value)}
             />
           </div>
           <div className="form-field">
             <label>IFSC</label>
             <input
               value={bankIfsc}
-              onChange={(event) => setBankIfsc(event.target.value.toUpperCase())}
-              maxLength={11}
+              onChange={(event) => setBankIfsc(event.target.value)}
             />
           </div>
         </div>

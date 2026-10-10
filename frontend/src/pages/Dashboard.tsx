@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import "../App.css";
 import { apiFetch } from "../api";
+import AppModal from "../components/AppModal";
 
 import { useLanguage } from "../i18n/LanguageContext";
 
@@ -34,6 +35,7 @@ interface DashboardSummary {
 
 interface RoomStatus {
   acRooms: number;
+  vipRooms: number;
   nonAcRooms: number;
   dormitories: number;
   hallRooms: number;
@@ -59,6 +61,7 @@ interface RecentBooking {
   check_in_date: string;
   expected_check_out_date: string;
   created_at: string;
+  can_delete: boolean;
   guest_name: string;
   room_number: string;
   resume_step: string | null;
@@ -159,6 +162,7 @@ function Dashboard({
   const [roomStatus, setRoomStatus] =
     useState<RoomStatus>({
       acRooms: 0,
+      vipRooms: 0,
       nonAcRooms: 0,
       dormitories: 0,
       hallRooms: 0,
@@ -185,6 +189,13 @@ function Dashboard({
   const [upiConfigSaving, setUpiConfigSaving] = useState(false);
   const [upiConfigMessage, setUpiConfigMessage] = useState("");
   const [upiConfigSaved, setUpiConfigSaved] = useState(false);
+  const [deleteDialog, setDeleteDialog] = useState<{
+    type: "confirm" | "error";
+    title: string;
+    message: string;
+    booking?: RecentBooking;
+  } | null>(null);
+  const [deletingBookingId, setDeletingBookingId] = useState<string | null>(null);
 
   /* ============================================================
      LOAD LIVE DASHBOARD DATA
@@ -258,6 +269,11 @@ function Dashboard({
           nonAcRooms:
             Number(
               data.roomStatus?.nonAcRooms
+            ) || 0,
+
+          vipRooms:
+            Number(
+              data.roomStatus?.vipRooms
             ) || 0,
 
           dormitories:
@@ -346,6 +362,39 @@ function Dashboard({
       );
     };
   }, [loadDashboardData]);
+
+  const deleteBooking = async () => {
+    const booking = deleteDialog?.booking;
+    if (!booking) {
+      return;
+    }
+
+    setDeletingBookingId(booking.id);
+    try {
+      const response = await apiFetch(
+        `http://localhost:5000/api/bookings/${booking.id}`,
+        { method: "DELETE" }
+      );
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Unable to delete this booking.");
+      }
+
+      setDeleteDialog(null);
+      await loadDashboardData();
+    } catch (error) {
+      setDeleteDialog({
+        type: "error",
+        title: language === "mr" ? "बुकिंग हटवता आली नाही" : "Booking Could Not Be Deleted",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to delete this booking.",
+      });
+    } finally {
+      setDeletingBookingId(null);
+    }
+  };
 
   useEffect(() => {
     if (user.role !== "ADMIN") {
@@ -1033,18 +1082,18 @@ function Dashboard({
             ) : collections ? (
               <div className="dashboard-stat-grid">
                 <article className="dashboard-stat-card stat-green">
-                  <span className="dashboard-stat-label">Today's Cash</span>
+                  <span className="dashboard-stat-label">Today's Collection</span>
                   <strong className="dashboard-stat-value">
-                    {formatCurrency(collections.todayCash)}
+                    {formatCurrency(collections.todayTotal)}
                   </strong>
+                  <span className="dashboard-stat-description">
+                    Cash: {formatCurrency(collections.todayCash)}
+                  </span>
                   <span className="dashboard-stat-description">
                     UPI / QR: {formatCurrency(collections.todayUpiQr)}
                   </span>
                   <span className="dashboard-stat-description">
                     Online / cheque: {formatCurrency(collections.todayOther)}
-                  </span>
-                  <span className="dashboard-stat-description">
-                    Total today: {formatCurrency(collections.todayTotal)}
                   </span>
                 </article>
                 <article className="dashboard-stat-card stat-blue">
@@ -1277,7 +1326,7 @@ function Dashboard({
                   <span className="action-symbol">₹</span>
                   <span>
                     <strong>
-                      {language === "mr" ? "दर सानुकूलित करा" : "Customize Rates"}
+                      {language === "mr" ? "खोली आणि दर सानुकूलित करा" : "Customize Room and Rates"}
                     </strong>
                     <small>
                       {language === "mr"
@@ -1401,6 +1450,27 @@ function Dashboard({
                 </b>
 
               </button>
+
+              {user.role === "ADMIN" && (
+                <button
+                  type="button"
+                  className="dashboard-action action-gold"
+                  onClick={onCheckIn}
+                >
+                  <span className="action-symbol">PC</span>
+                  <span>
+                    <strong>
+                      {language === "mr" ? "प्री-चेक-इन" : "Pre-Checkin"}
+                    </strong>
+                    <small>
+                      {language === "mr"
+                        ? "वास्तविक आगमन तारीखसह मॅन्युअल नोंद"
+                        : "Manual arrival entry for actual check-in date"}
+                    </small>
+                  </span>
+                  <b>→</b>
+                </button>
+              )}
 
               {/* CHECK-OUT */}
 
@@ -1675,6 +1745,34 @@ function Dashboard({
                   {loading
                     ? "—"
                     : roomStatus.acRooms}
+                </strong>
+
+              </div>
+
+              {/* VIP ROOMS */}
+
+              <div className="room-status-item">
+
+                <div className="room-status-name">
+
+                  <span className="room-status-dot dot-orange" />
+
+                  <div>
+
+                    <strong>
+                      {language === "mr" ? "व्हीआयपी खोल्या" : "VIP Rooms"}
+                    </strong>
+
+                    <small>
+                      {language === "mr" ? "विशेष निवास" : "Special accommodation"}
+                    </small>
+
+                  </div>
+
+                </div>
+
+                <strong className="room-status-number">
+                  {loading ? "—" : roomStatus.vipRooms}
                 </strong>
 
               </div>
@@ -2007,6 +2105,32 @@ function Dashboard({
                           </div>
                         )}
 
+                        {booking.can_delete && (
+                            <div className="dashboard-resume-action">
+                              <button
+                                type="button"
+                                className="dashboard-delete-booking"
+                                onClick={() =>
+                                  setDeleteDialog({
+                                    type: "confirm",
+                                    title:
+                                      language === "mr"
+                                        ? "बुकिंग हटवायची?"
+                                        : "Delete Booking?",
+                                    message:
+                                      language === "mr"
+                                        ? `${booking.booking_reference} ही अपूर्ण/प्रलंबित बुकिंग कायमची हटवली जाईल.`
+                                        : `${booking.booking_reference} will be permanently deleted. This is available only for incomplete or pending bookings.`,
+                                    booking,
+                                  })
+                                }
+                                disabled={deletingBookingId === booking.id}
+                              >
+                                {language === "mr" ? "बुकिंग हटवा" : "Delete Booking"}
+                              </button>
+                            </div>
+                          )}
+
                       </span>
 
                     </div>
@@ -2107,6 +2231,31 @@ function Dashboard({
         </span>
 
       </footer>
+
+      {deleteDialog && (
+        <AppModal
+          type={deleteDialog.type}
+          title={deleteDialog.title}
+          message={deleteDialog.message}
+          confirmText={
+            deleteDialog.type === "error"
+              ? language === "mr" ? "ठीक आहे" : "OK"
+              : language === "mr" ? "हटवा" : "Delete"
+          }
+          cancelText={language === "mr" ? "रद्द करा" : "Cancel"}
+          loading={deletingBookingId !== null}
+          showCancel={deleteDialog.type === "confirm"}
+          onConfirm={() => {
+            if (deleteDialog.type === "confirm") {
+              void deleteBooking();
+            } else {
+              setDeleteDialog(null);
+            }
+          }}
+          onCancel={() => setDeleteDialog(null)}
+          onClose={() => setDeleteDialog(null)}
+        />
+      )}
 
     </main>
   );

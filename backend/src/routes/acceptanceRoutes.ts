@@ -203,7 +203,8 @@ router.post("/", async (req: Request, res: Response) => {
         bg.booking_id,
         bg.guest_id,
         bg.is_primary_guest,
-        g.guest_name
+        g.guest_name,
+        g.gender
       FROM booking_guests bg
       INNER JOIN guests g
         ON g.id = bg.guest_id
@@ -239,6 +240,7 @@ router.post("/", async (req: Request, res: Response) => {
         r.room_status,
         r.is_under_maintenance,
         r.is_active,
+        r.allowed_gender,
         rc.category_name,
         card.room_capacity,
         card.bed_capacity
@@ -278,6 +280,17 @@ router.post("/", async (req: Request, res: Response) => {
       return res.status(409).json({
         success: false,
         message: "Selected room is under maintenance and unavailable.",
+      });
+    }
+
+    if (
+      room.allowed_gender &&
+      String(guest.gender ?? "").trim().toUpperCase() !== room.allowed_gender
+    ) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        success: false,
+        message: `Room ${room.room_number} is reserved for ${room.allowed_gender.toLowerCase()} guests only.`,
       });
     }
 

@@ -114,6 +114,123 @@ const toIsoString = (value: Date | string): string =>
 const normalizeCategory = (category: string): string =>
   category.toUpperCase().replace(/[\s_-]/g, "");
 
+export interface UpcomingAdvanceBooking {
+  bookingReference: string;
+  serviceMember: string;
+  guests: string;
+  bookingStatus: string;
+  approvalStatus: string;
+  checkInDate: string;
+  checkOutDate: string;
+  roomDetails: string;
+  guestCount: number;
+  bookingAmount: number;
+  amountPaid: number;
+}
+
+export const getUpcomingAdvanceBookings = async (
+  db: ReportDbConnection = pool
+): Promise<UpcomingAdvanceBooking[]> => {
+  const result = await db.query<{
+    booking_reference: string;
+    service_member: string | null;
+    guests: string | null;
+    booking_status: string;
+    approval_status: string;
+    check_in_date: Date | string;
+    check_out_date: Date | string;
+    room_details: string | null;
+    guest_count: number | string;
+    booking_amount: number | string;
+    amount_paid: number | string;
+  } & QueryResultRow>(
+    `
+    SELECT
+      b.booking_reference,
+      sm.full_name AS service_member,
+      guest_list.guests,
+      b.booking_status,
+      b.approval_status,
+      b.check_in_date,
+      b.expected_check_out_date AS check_out_date,
+      COALESCE(allotted_rooms.room_details, accepted_rooms.room_details, 'Not allotted')
+        AS room_details,
+      b.number_of_guests::INTEGER AS guest_count,
+      COALESCE(pricing.total_amount, 0)::NUMERIC(12, 2) AS booking_amount,
+      COALESCE(paid.amount_paid, 0)::NUMERIC(12, 2) AS amount_paid
+    FROM bookings b
+    LEFT JOIN booking_service_members sm
+      ON sm.booking_id = b.id
+    LEFT JOIN booking_pricing pricing
+      ON pricing.booking_id = b.id
+    LEFT JOIN LATERAL (
+      SELECT STRING_AGG(g.guest_name, ', ' ORDER BY bg.is_primary_guest DESC, bg.created_at)
+        AS guests
+      FROM booking_guests bg
+      INNER JOIN guests g ON g.id = bg.guest_id
+      WHERE bg.booking_id = b.id
+    ) guest_list ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT STRING_AGG(room_detail, ', ' ORDER BY room_detail) AS room_details
+      FROM (
+        SELECT DISTINCT
+          r.room_number || CASE
+            WHEN bd.bed_number IS NULL THEN ''
+            ELSE ' / Bed ' || bd.bed_number::TEXT
+          END AS room_detail
+        FROM allotments a
+        INNER JOIN rooms r ON r.id = a.room_id
+        LEFT JOIN beds bd ON bd.id = a.bed_id
+        WHERE a.booking_id = b.id
+          AND a.allotment_status = 'ALLOTTED'
+      ) room_assignments
+    ) allotted_rooms ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT STRING_AGG(room_detail, ', ' ORDER BY room_detail) AS room_details
+      FROM (
+        SELECT DISTINCT
+          r.room_number || CASE
+            WHEN bd.bed_number IS NULL THEN ''
+            ELSE ' / Bed ' || bd.bed_number::TEXT
+          END AS room_detail
+        FROM booking_acceptances ba
+        INNER JOIN rooms r ON r.id = ba.room_id
+        LEFT JOIN beds bd ON bd.id = ba.bed_id
+        WHERE ba.booking_id = b.id
+          AND ba.acceptance_status = 'ACCEPTED'
+      ) accepted_assignments
+    ) accepted_rooms ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT SUM(p.amount)::NUMERIC(12, 2) AS amount_paid
+      FROM payments p
+      WHERE p.booking_id = b.id
+        AND UPPER(p.payment_status) IN ('SUCCESS', 'COMPLETED', 'PAID', 'RECEIVED')
+    ) paid ON TRUE
+    WHERE
+      UPPER(b.booking_type) = 'ADVANCE'
+      AND b.check_in_date >
+        (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::DATE
+      AND UPPER(COALESCE(b.approval_status, '')) <> 'REJECTED'
+      AND UPPER(COALESCE(b.booking_status, '')) NOT LIKE '%CANCEL%'
+    ORDER BY b.check_in_date, b.booking_reference
+    `
+  );
+
+  return result.rows.map((row) => ({
+    bookingReference: row.booking_reference,
+    serviceMember: row.service_member || "—",
+    guests: row.guests || "—",
+    bookingStatus: row.booking_status,
+    approvalStatus: row.approval_status,
+    checkInDate: String(row.check_in_date).slice(0, 10),
+    checkOutDate: String(row.check_out_date).slice(0, 10),
+    roomDetails: row.room_details || "Not allotted",
+    guestCount: Number(row.guest_count),
+    bookingAmount: Number(row.booking_amount),
+    amountPaid: Number(row.amount_paid),
+  }));
+};
+
 const emptyTotals = () => ({
   male: 0,
   female: 0,
