@@ -388,6 +388,16 @@ async function checkRoomDateConflict(
   checkOutDate?: string;
 }> {
 
+  await client.query(
+    `
+    SELECT id
+    FROM rooms
+    WHERE id = $1
+    FOR UPDATE
+    `,
+    [roomId]
+  );
+
   const result =
     await client.query(
       `
@@ -479,6 +489,18 @@ async function checkBedDateConflict(
   checkOutDate?: string;
 }> {
 
+  await client.query(
+    `
+    SELECT r.id
+    FROM rooms r
+    INNER JOIN beds bed
+      ON bed.room_id = r.id
+    WHERE bed.id = $1
+    FOR UPDATE OF r
+    `,
+    [bedId]
+  );
+
   const result =
     await client.query(
       `
@@ -493,7 +515,7 @@ async function checkBedDateConflict(
         ON b.id = a.booking_id
 
       WHERE
-        a.bed_id = $1
+        (a.bed_id = $1 OR a.bed_id IS NULL)
 
         AND a.booking_id <> $2
 
@@ -1156,45 +1178,6 @@ router.post(
 
 
           /* -----------------------------
-             CHECK CURRENT ACTIVE
-             WHOLE-ROOM ALLOTMENT
-          ------------------------------ */
-
-          const activeRoomAllotment =
-            await client.query(
-              `
-              SELECT
-                a.id,
-                a.booking_id
-
-              FROM allotments a
-
-              WHERE
-                a.room_id = $1
-                AND a.bed_id IS NULL
-                AND a.allotment_status = 'ALLOTTED'
-
-              LIMIT 1
-              `,
-              [
-                roomId,
-              ]
-            );
-
-
-          if (
-            activeRoomAllotment.rowCount &&
-            activeRoomAllotment.rowCount > 0
-          ) {
-
-            throw new Error(
-              `Room ${room.room_number} is already allotted.`
-            );
-
-          }
-
-
-          /* -----------------------------
              PERMISSION
           ------------------------------ */
 
@@ -1314,8 +1297,9 @@ router.post(
 
 
         if (
-          bed.bed_status !==
-          "AVAILABLE"
+          !["AVAILABLE", "BOOKED"].includes(
+            String(bed.bed_status).toUpperCase()
+          )
         ) {
 
           throw new Error(
@@ -1345,42 +1329,6 @@ router.post(
 
           throw new Error(
             `Room ${room.room_number}, Bed ${bed.bed_number} is already allotted to booking ${bedConflict.bookingReference} for ${bedConflict.checkInDate} to ${bedConflict.checkOutDate}.`
-          );
-
-        }
-
-
-        /* -----------------------------
-           ACTIVE BED ALLOTMENT
-        ------------------------------ */
-
-        const activeBedAllotment =
-          await client.query(
-            `
-            SELECT
-              a.id
-
-            FROM allotments a
-
-            WHERE
-              a.bed_id = $1
-              AND a.allotment_status = 'ALLOTTED'
-
-            LIMIT 1
-            `,
-            [
-              bedId,
-            ]
-          );
-
-
-        if (
-          activeBedAllotment.rowCount &&
-          activeBedAllotment.rowCount > 0
-        ) {
-
-          throw new Error(
-            `Room ${room.room_number}, Bed ${bed.bed_number} is already allotted.`
           );
 
         }
@@ -2164,43 +2112,6 @@ router.post(
 
 
         /* -------------------------------
-           CURRENT ACTIVE WHOLE ROOM
-        -------------------------------- */
-
-        const activeRoom =
-          await client.query(
-            `
-            SELECT
-              a.id
-
-            FROM allotments a
-
-            WHERE
-              a.room_id = $1
-              AND a.bed_id IS NULL
-              AND a.allotment_status = 'ALLOTTED'
-
-            LIMIT 1
-            `,
-            [
-              room_id,
-            ]
-          );
-
-
-        if (
-          activeRoom.rowCount &&
-          activeRoom.rowCount > 0
-        ) {
-
-          throw new Error(
-            `Room ${room.room_number} is already allotted.`
-          );
-
-        }
-
-
-        /* -------------------------------
            INSERT ROOM ALLOTMENT
         -------------------------------- */
 
@@ -2414,8 +2325,9 @@ router.post(
 
 
       if (
-        bed.bed_status !==
-        "AVAILABLE"
+        !["AVAILABLE", "BOOKED"].includes(
+          String(bed.bed_status).toUpperCase()
+        )
       ) {
 
         throw new Error(
@@ -2445,42 +2357,6 @@ router.post(
 
         throw new Error(
           `Room ${room.room_number}, Bed ${bed.bed_number} is already allotted to booking ${bedConflict.bookingReference} for ${bedConflict.checkInDate} to ${bedConflict.checkOutDate}.`
-        );
-
-      }
-
-
-      /* ===================================
-         ACTIVE BED ALLOTMENT
-      =================================== */
-
-      const activeBed =
-        await client.query(
-          `
-          SELECT
-            a.id
-
-          FROM allotments a
-
-          WHERE
-            a.bed_id = $1
-            AND a.allotment_status = 'ALLOTTED'
-
-          LIMIT 1
-          `,
-          [
-            bed_id,
-          ]
-        );
-
-
-      if (
-        activeBed.rowCount &&
-        activeBed.rowCount > 0
-      ) {
-
-        throw new Error(
-          `Room ${room.room_number}, Bed ${bed.bed_number} is already allotted.`
         );
 
       }
@@ -3385,33 +3261,6 @@ router.post(
           }
 
           /* -------------------------------
-             ACTIVE ROOM ALLOTMENT
-          -------------------------------- */
-
-          const activeRoomResult =
-            await client.query(
-              `
-              SELECT id
-              FROM allotments
-              WHERE
-                room_id = $1
-                AND bed_id IS NULL
-                AND allotment_status = 'ALLOTTED'
-              LIMIT 1
-              `,
-              [roomId]
-            );
-
-          if (
-            activeRoomResult.rowCount &&
-            activeRoomResult.rowCount > 0
-          ) {
-            throw new Error(
-              `Room ${room.room_number} is already allotted.`
-            );
-          }
-
-          /* -------------------------------
              GET ACCEPTED GUESTS FOR ROOM
           -------------------------------- */
 
@@ -3603,8 +3452,9 @@ router.post(
         }
 
         if (
-          bed.bed_status !==
-          "AVAILABLE"
+          !["AVAILABLE", "BOOKED"].includes(
+            String(bed.bed_status).toUpperCase()
+          )
         ) {
           throw new Error(
             `Bed ${bed.bed_number} in room ${room.room_number} is not available.`
@@ -3629,32 +3479,6 @@ router.post(
         ) {
           throw new Error(
             `Room ${room.room_number}, Bed ${bed.bed_number} is already allotted to booking ${bedConflict.bookingReference} for ${bedConflict.checkInDate} to ${bedConflict.checkOutDate}.`
-          );
-        }
-
-        /* -------------------------------
-           ACTIVE BED ALLOTMENT
-        -------------------------------- */
-
-        const activeBedResult =
-          await client.query(
-            `
-            SELECT id
-            FROM allotments
-            WHERE
-              bed_id = $1
-              AND allotment_status = 'ALLOTTED'
-            LIMIT 1
-            `,
-            [bedId]
-          );
-
-        if (
-          activeBedResult.rowCount &&
-          activeBedResult.rowCount > 0
-        ) {
-          throw new Error(
-            `Room ${room.room_number}, Bed ${bed.bed_number} is already allotted.`
           );
         }
 

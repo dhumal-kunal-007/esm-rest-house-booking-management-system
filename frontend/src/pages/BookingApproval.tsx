@@ -1954,15 +1954,13 @@ function BookingApproval({
         }}
       >
 
-        {!alreadyApproved && (
-          <button
-            type="button"
-            className="secondary-action"
-            onClick={onBack}
-          >
-            {tr("BACK", "मागे")}
-          </button>
-        )}
+        <button
+          type="button"
+          className="secondary-action"
+          onClick={onBack}
+        >
+          {tr("BACK", "मागे")}
+        </button>
 
 
         <div

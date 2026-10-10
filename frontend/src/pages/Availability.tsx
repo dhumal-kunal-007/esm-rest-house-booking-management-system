@@ -766,7 +766,10 @@ function Availability({
       };
     }
 
-    if (isWholeRoom(room)) {
+    if (
+      isWholeRoom(room) &&
+      !(booking?.checkIn && booking.checkOut)
+    ) {
       const roomStatus: Partial<
         Record<
           string,

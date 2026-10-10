@@ -165,7 +165,7 @@ router.post("/", async (req: Request, res: Response) => {
     }
 
     if (
-      booking.approval_status !== "PENDING" ||
+      !["PENDING", "APPROVED"].includes(booking.approval_status) ||
       booking.booking_status !== "PENDING_APPROVAL"
     ) {
       await client.query("ROLLBACK");
@@ -187,6 +187,26 @@ router.post("/", async (req: Request, res: Response) => {
         success: false,
         message:
           "Accommodation cannot be changed after a payment has been recorded.",
+      });
+    }
+
+    const bookingAllotmentResult = await client.query(
+      `
+      SELECT 1
+      FROM allotments
+      WHERE booking_id = $1
+        AND allotment_status = 'ALLOTTED'
+      LIMIT 1
+      `,
+      [bookingId]
+    );
+
+    if ((bookingAllotmentResult.rowCount ?? 0) > 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        success: false,
+        message:
+          "Accommodation cannot be changed after a room or bed has been physically allotted.",
       });
     }
 
@@ -467,9 +487,9 @@ router.post("/", async (req: Request, res: Response) => {
        */
 
       if (
-        String(
-          bed.bed_status
-        ).toUpperCase() !== "AVAILABLE"
+        !["AVAILABLE", "BOOKED"].includes(
+          String(bed.bed_status).toUpperCase()
+        )
       ) {
         await client.query("ROLLBACK");
 
@@ -494,8 +514,8 @@ router.post("/", async (req: Request, res: Response) => {
           SELECT
             COUNT(*)::INTEGER AS total_beds,
             COUNT(*) FILTER (
-              WHERE UPPER(bed_status) = 'AVAILABLE'
-            )::INTEGER AS available_beds
+              WHERE UPPER(bed_status) NOT IN ('AVAILABLE', 'BOOKED')
+            )::INTEGER AS unavailable_beds
           FROM beds
           WHERE room_id = $1
             AND is_active = TRUE
@@ -507,13 +527,13 @@ router.post("/", async (req: Request, res: Response) => {
         bedStatusResult.rows[0]
           ?.total_beds ?? 0;
 
-      const availableBeds =
+      const unavailableBeds =
         bedStatusResult.rows[0]
-          ?.available_beds ?? 0;
+          ?.unavailable_beds ?? 0;
 
       if (
         totalBeds === 0 ||
-        availableBeds !== totalBeds
+        unavailableBeds > 0
       ) {
         await client.query("ROLLBACK");
 
@@ -607,6 +627,59 @@ router.post("/", async (req: Request, res: Response) => {
         message:
           "The selected room or bed is already physically allotted for an overlapping stay.",
       });
+    }
+
+    const priorAcceptanceResult = await client.query(
+      `
+      SELECT room_id, bed_id
+      FROM booking_acceptances
+      WHERE booking_id = $1
+        AND guest_id = $2
+        AND acceptance_status = 'ACCEPTED'
+      LIMIT 1
+      `,
+      [bookingId, guestId]
+    );
+    const priorAcceptance = priorAcceptanceResult.rows[0];
+    const selectionChanged =
+      !priorAcceptance ||
+      String(priorAcceptance.room_id) !== String(roomId) ||
+      (priorAcceptance.bed_id ? String(priorAcceptance.bed_id) : null) !==
+        (bedId ? String(bedId) : null);
+    const approvalMustReset =
+      booking.approval_status === "APPROVED" && selectionChanged;
+    const shouldRestartPricingWorkflow =
+      booking.approval_status !== "APPROVED" || approvalMustReset;
+
+    if (approvalMustReset) {
+      await client.query(
+        `
+        UPDATE bookings
+        SET approval_status = 'PENDING',
+            acceptance_status = 'PENDING',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+        `,
+        [bookingId]
+      );
+      await client.query(
+        `
+        UPDATE booking_approvals
+        SET approval_status = 'PENDING',
+            approved_at = NULL,
+            remarks = CONCAT(
+              COALESCE(remarks, ''),
+              CASE
+                WHEN COALESCE(remarks, '') = '' THEN ''
+                ELSE ' | '
+              END,
+              'Re-approval required after accommodation changes.'
+            )
+        WHERE booking_id = $1
+          AND approval_status = 'APPROVED'
+        `,
+        [bookingId]
+      );
     }
 
     /*
@@ -723,40 +796,42 @@ router.post("/", async (req: Request, res: Response) => {
       ]
     );
 
-    await client.query(
-      "DELETE FROM booking_pricing WHERE booking_id = $1",
-      [bookingId]
-    );
+    if (shouldRestartPricingWorkflow) {
+      await client.query(
+        "DELETE FROM booking_pricing WHERE booking_id = $1",
+        [bookingId]
+      );
 
-    await client.query(
-      `
-      INSERT INTO booking_workflow_progress (
-        booking_id, current_step, updated_by, updated_at
-      )
-      VALUES (
-        $1,
-        CASE
-          WHEN $3 = $4 THEN 'GUEST_TYPE'
-          ELSE 'AVAILABILITY'
-        END,
-        $2,
-        CURRENT_TIMESTAMP
-      )
-      ON CONFLICT (booking_id)
-      DO UPDATE SET
-        current_step = EXCLUDED.current_step,
-        progress_data =
-          booking_workflow_progress.progress_data - 'guest_type',
-        updated_by = EXCLUDED.updated_by,
-        updated_at = CURRENT_TIMESTAMP
-      `,
-      [
-        bookingId,
-        req.authUser!.id,
-        acceptedGuests,
-        Number(booking.number_of_guests),
-      ]
-    );
+      await client.query(
+        `
+        INSERT INTO booking_workflow_progress (
+          booking_id, current_step, updated_by, updated_at
+        )
+        VALUES (
+          $1,
+          CASE
+            WHEN $3 = $4 THEN 'GUEST_TYPE'
+            ELSE 'AVAILABILITY'
+          END,
+          $2,
+          CURRENT_TIMESTAMP
+        )
+        ON CONFLICT (booking_id)
+        DO UPDATE SET
+          current_step = EXCLUDED.current_step,
+          progress_data =
+            booking_workflow_progress.progress_data - 'guest_type',
+          updated_by = EXCLUDED.updated_by,
+          updated_at = CURRENT_TIMESTAMP
+        `,
+        [
+          bookingId,
+          req.authUser!.id,
+          acceptedGuests,
+          Number(booking.number_of_guests),
+        ]
+      );
+    }
 
     await client.query("COMMIT");
 
@@ -778,6 +853,9 @@ router.post("/", async (req: Request, res: Response) => {
 
         acceptance_status:
           bookingAcceptanceStatus,
+
+        approval_status:
+          approvalMustReset ? "PENDING" : booking.approval_status,
       },
 
       guest: {

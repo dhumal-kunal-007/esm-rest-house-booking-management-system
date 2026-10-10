@@ -226,16 +226,30 @@ router.get("/summary", async (req, res) => {
         ) AS can_delete,
         CASE
           WHEN
-            (b.created_by = $1 OR $2 = 'ADMIN')
+            (
+              b.created_by = $1
+              OR $2 IN ('ADMIN', 'RECEPTIONIST')
+            )
             AND b.booking_status = 'PENDING_APPROVAL'
             AND b.approval_status = 'APPROVED'
             AND accepted.accepted_guest_count =
               b.number_of_guests
             AND pricing.booking_id IS NOT NULL
-            AND NOT EXISTS (
-              SELECT 1 FROM payments p WHERE p.booking_id = b.id
-            )
-          THEN 'PAYMENT'
+          THEN
+            CASE
+              WHEN latest_payment.id IS NULL
+                THEN 'PAYMENT'
+              WHEN latest_invoice.id IS NULL
+                THEN 'INVOICE'
+              WHEN NOT EXISTS (
+                SELECT 1
+                FROM allotments a
+                WHERE a.booking_id = b.id
+                  AND a.allotment_status = 'ALLOTTED'
+              )
+                THEN 'ROOM_LOCKED'
+              ELSE NULL
+            END
           WHEN
             (b.created_by = $1 OR $2 = 'ADMIN')
             AND b.booking_status = 'PENDING_APPROVAL'
@@ -290,6 +304,22 @@ router.get("/summary", async (req, res) => {
       ) accepted ON TRUE
       LEFT JOIN booking_pricing pricing
         ON pricing.booking_id = b.id
+      LEFT JOIN LATERAL (
+        SELECT
+          p.id
+        FROM payments p
+        WHERE p.booking_id = b.id
+        ORDER BY p.created_at DESC
+        LIMIT 1
+      ) latest_payment ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          bi.id
+        FROM booking_invoices bi
+        WHERE bi.payment_id = latest_payment.id
+        ORDER BY bi.created_at DESC
+        LIMIT 1
+      ) latest_invoice ON TRUE
 
       LEFT JOIN LATERAL (
         SELECT

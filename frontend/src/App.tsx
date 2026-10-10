@@ -86,6 +86,7 @@ import type {
 
 import type {
   InvoiceData,
+  InvoiceType,
 } from "./pages/Invoice";
 
 import type {
@@ -922,51 +923,31 @@ function AppContent() {
       return;
     }
 
-    if (booking.id) {
-      try {
-        await saveBookingProgress(
-          booking.id,
-          "AVAILABILITY",
-          {
-            availability_selections:
-              workflow.availabilitySelections,
-          }
-        );
-        setWorkflow((current) => ({
-          ...current,
-          stage: "AVAILABILITY",
-          booking,
-        }));
-        setCurrentPage("workflow");
-      } catch (error) {
-        setModal({
-          type: "error",
-          title: "Booking Draft Could Not Be Saved",
-          message:
-            error instanceof Error
-              ? error.message
-              : "Unable to save the current booking draft.",
-        });
-      }
-      return;
-    }
+    const bookingToSave: BookingDraft = {
+      ...booking,
+      id: booking.id ?? workflow.booking?.id,
+      guests: booking.guests.map((guest, index) => ({
+        ...guest,
+        id: guest.id ?? workflow.booking?.guests[index]?.id,
+      })),
+    };
 
     try {
       const bookingPayload = {
 
                 booking_type:
-                  booking.bookingType,
+                  bookingToSave.bookingType,
 
                 check_in_date:
-                  booking.checkIn
+                  bookingToSave.checkIn
                     .split("T")[0],
 
                 expected_check_out_date:
-                  booking.checkOut
+                  bookingToSave.checkOut
                     .split("T")[0],
 
                 number_of_guests:
-                  booking.guests.length,
+                  bookingToSave.guests.length,
 
                 purpose_of_visit:
                   "Rest House Accommodation",
@@ -979,27 +960,30 @@ function AppContent() {
 
                 service_member: {
                   service_number:
-                    booking.serviceman.number,
+                    bookingToSave.serviceman.number,
                   rank:
-                    booking.serviceman.rank,
+                    bookingToSave.serviceman.rank,
                   full_name:
-                    booking.serviceman.name,
+                    bookingToSave.serviceman.name,
                   mobile_number:
-                    booking.serviceman.mobile,
+                    bookingToSave.serviceman.mobile,
                   address:
-                    booking.serviceman.address,
+                    bookingToSave.serviceman.address,
                   aadhaar_number:
-                    booking.serviceman.aadhaar,
+                    bookingToSave.serviceman.aadhaar,
                 },
 
                 created_by:
                   loggedInUser.id,
 
                 guests:
-                  booking.guests.map(
+                  bookingToSave.guests.map(
                     (guest) => ({
-                      name:
-                        guest.name,
+                    id:
+                      guest.id,
+
+                    name:
+                      guest.name,
 
                       gender:
                         guest.gender,
@@ -1026,8 +1010,8 @@ function AppContent() {
 
               };
       const hasDocuments = Boolean(
-        booking.serviceman.document ||
-          booking.guests.some((guest) => guest.document)
+        bookingToSave.serviceman.document ||
+          bookingToSave.guests.some((guest) => guest.document)
       );
       const requestHeaders: HeadersInit = hasDocuments
         ? {}
@@ -1039,13 +1023,13 @@ function AppContent() {
           "booking_payload",
           JSON.stringify(bookingPayload)
         );
-        if (booking.serviceman.document) {
+        if (bookingToSave.serviceman.document) {
           formData.append(
             "booking_person_document",
-            booking.serviceman.document
+            bookingToSave.serviceman.document
           );
         }
-        booking.guests.forEach((guest, index) => {
+        bookingToSave.guests.forEach((guest, index) => {
           if (guest.document) {
             formData.append(
               `occupant_document_${index}`,
@@ -1059,9 +1043,11 @@ function AppContent() {
       }
 
       const response = await apiFetch(
-        "http://localhost:5000/api/bookings",
+        bookingToSave.id
+          ? `http://localhost:5000/api/bookings/${bookingToSave.id}`
+          : "http://localhost:5000/api/bookings",
         {
-          method: "POST",
+          method: bookingToSave.id ? "PUT" : "POST",
           headers: requestHeaders,
           body: requestBody,
         }
@@ -1075,16 +1061,21 @@ function AppContent() {
         setModal({
           type: "error",
           title:
-            "Booking Could Not Be Created",
+            bookingToSave.id
+              ? "Booking Could Not Be Updated"
+              : "Booking Could Not Be Created",
           message:
             data.message ||
-            "Unable to create booking.",
+            (bookingToSave.id
+              ? "Unable to update booking."
+              : "Unable to create booking."),
         });
 
         return;
       }
 
-      if (!data.booking?.id) {
+      const bookingId = bookingToSave.id || data.booking?.id;
+      if (!bookingId) {
 
         setModal({
           type: "error",
@@ -1117,25 +1108,41 @@ function AppContent() {
       const bookingWithIds:
         BookingDraft = {
 
-        ...booking,
+        ...bookingToSave,
 
         id:
-          data.booking.id,
+          bookingId,
 
         guests:
-          booking.guests.map(
+          bookingToSave.guests.map(
             (
               guest,
               index
             ) => ({
               ...guest,
               id:
-                data.guests[index]?.id,
+                data.guests[index]?.id ?? guest.id,
             })
           ),
 
       };
 
+      const retainedSelections =
+        workflow.availabilitySelections
+          .filter((selection) =>
+            bookingWithIds.guests.some(
+              (guest) => guest.id === selection.guestId
+            )
+          )
+          .map((selection) => ({
+            ...selection,
+            occupantName:
+              bookingWithIds.guests.find(
+                (guest) => guest.id === selection.guestId
+              )?.name ?? selection.occupantName,
+          }));
+      const bookingRemainsApproved =
+        data.booking?.approval_status === "APPROVED";
       setWorkflow(
         (current) => ({
           ...current,
@@ -1143,23 +1150,43 @@ function AppContent() {
             "AVAILABILITY",
           booking:
             bookingWithIds,
+          availabilitySelections:
+            retainedSelections,
+          ...(bookingRemainsApproved
+            ? {}
+            : {
+                guestType: null,
+                rateSelection: null,
+                rateResult: null,
+                bookingConfirmation: null,
+                approvalDecision: null,
+                approvalRemarks: "",
+              }),
         })
       );
+      setCurrentPage("workflow");
 
-      setModal({
-        type: "success",
-        title:
-          "Booking Created",
-        message:
-          `Booking Reference: ${
-            data.booking.booking_reference
-          }`,
-        onCloseAction: () => {
-          setCurrentPage(
-            "workflow"
-          );
-        },
-      });
+      if (!bookingRemainsApproved) {
+        await saveBookingProgress(
+          bookingId,
+          "AVAILABILITY",
+          {
+            availability_selections: retainedSelections,
+          }
+        );
+      }
+
+      if (!bookingToSave.id) {
+        setModal({
+          type: "success",
+          title:
+            "Booking Created",
+          message:
+            `Booking Reference: ${
+              data.booking.booking_reference
+            }`,
+        });
+      }
 
     } catch (error) {
 
@@ -1270,6 +1297,7 @@ function AppContent() {
           gender: String(guest.gender ?? ""),
           relationship: String(guest.relationship ?? ""),
           mobile: String(guest.mobile_number ?? ""),
+          address: String(guest.address ?? ""),
           relationshipProofType: String(
             guest.relationship_proof_type ?? ""
           ),
@@ -1277,7 +1305,6 @@ function AppContent() {
             guest.relationship_proof_number ?? ""
           ),
           aadhaar: "",
-          address: "",
         })
       );
 
@@ -1305,13 +1332,17 @@ function AppContent() {
           ),
           rank: String(savedBooking.service_member?.rank ?? ""),
           name: String(savedBooking.service_member?.full_name ?? ""),
-          mobile: "",
+          mobile: String(savedBooking.service_member?.mobile ?? ""),
           address: String(savedBooking.service_member?.address ?? ""),
           aadhaar: "",
         },
         guests,
-        checkIn: String(savedBooking.check_in_date),
-        checkOut: String(savedBooking.check_out_date),
+        checkIn: String(savedBooking.check_in_date).includes("T")
+          ? String(savedBooking.check_in_date)
+          : `${savedBooking.check_in_date}T14:00`,
+        checkOut: String(savedBooking.check_out_date).includes("T")
+          ? String(savedBooking.check_out_date)
+          : `${savedBooking.check_out_date}T12:00`,
       };
 
       const acceptedAccommodation: AcceptedAccommodation[] =
@@ -1409,6 +1440,85 @@ function AppContent() {
               : [],
           }
         : null;
+      const savedPayment = data.payment as
+          | Record<string, unknown>
+          | null;
+      const paymentMethod = String(
+          savedPayment?.payment_method ?? ""
+      ).toUpperCase();
+      if (
+          savedPayment &&
+          !["CASH", "ONLINE", "UPI", "CHEQUE"].includes(paymentMethod)
+      ) {
+          throw new Error(
+            "The saved payment method is not recognized."
+          );
+      }
+      const resumedPayment: PaymentData | null =
+          savedPayment && guestType && rateResult
+            ? {
+                bookingId: booking.id,
+                guestName:
+                  booking.guests[0]?.name ||
+                  booking.serviceman.name,
+                guestType,
+                approvedAmount: rateResult.totalAmount,
+                amountReceived: Number(savedPayment.amount),
+                paymentMethod:
+                  paymentMethod as PaymentData["paymentMethod"],
+                transactionNumber: String(
+                  savedPayment.transaction_number ?? ""
+                ),
+                paymentDate: String(
+                  savedPayment.payment_date ?? ""
+                ).slice(0, 10),
+                remarks: String(savedPayment.remarks ?? ""),
+              }
+            : null;
+      const savedInvoice = data.invoice as
+          | Record<string, unknown>
+          | null;
+      const invoiceType = String(
+          savedInvoice?.invoice_type ?? ""
+      ).toUpperCase();
+      if (
+          savedInvoice &&
+          !["CASH_MEMO", "CREDIT_MEMO"].includes(invoiceType)
+      ) {
+          throw new Error(
+            "The saved invoice type is not recognized."
+          );
+      }
+      const resumedInvoice: InvoiceData | null =
+          savedInvoice && resumedPayment && guestType && rateResult
+            ? {
+                bookingId: booking.id,
+                bookingReference: String(
+                  savedBooking.booking_reference ?? ""
+                ),
+                invoiceType: invoiceType as InvoiceType,
+                invoiceNumber: String(
+                  savedInvoice.invoice_number ?? ""
+                ),
+                invoiceDate: String(
+                  savedInvoice.invoice_date ?? ""
+                ).slice(0, 10),
+                guestName:
+                  booking.guests[0]?.name ||
+                  booking.serviceman.name,
+                guestType,
+                totalAmount: rateResult.totalAmount,
+                paidAmount: Number(savedInvoice.amount),
+                balanceAmount:
+                  rateResult.totalAmount -
+                  Number(savedInvoice.amount),
+                paymentMethod:
+                  resumedPayment.paymentMethod,
+                transactionNumber:
+                  resumedPayment.transactionNumber,
+                remarks: resumedPayment.remarks,
+              }
+            : null;
       const bookingConfirmation: BookingConfirmationData | null =
         rateSelection && rateResult && guestType
           ? {
@@ -1437,6 +1547,16 @@ function AppContent() {
         rateSelection,
         rateResult,
         bookingConfirmation,
+        payment: resumedPayment,
+        paymentId:
+          savedPayment?.id == null
+            ? null
+            : String(savedPayment.id),
+        invoice: resumedInvoice,
+        approvalDecision:
+          savedBooking.approval_status === "APPROVED"
+            ? "APPROVED"
+            : null,
       }));
       setCurrentPage("workflow");
     } catch (error) {
@@ -1592,6 +1712,7 @@ console.log(
     }
 
     try {
+      let resultingApprovalStatus: string | undefined;
 
       for (
         const selection
@@ -1657,6 +1778,9 @@ console.log(
 
         }
 
+        resultingApprovalStatus =
+          data.booking?.approval_status;
+
       }
 
       const acceptedAccommodation:
@@ -1687,31 +1811,49 @@ console.log(
           })
         );
 
-      await saveBookingProgress(
-        workflow.booking.id,
-        "GUEST_TYPE",
-        {
-          availability_selections: selections,
-        }
-      );
+      const remainsApproved =
+        resultingApprovalStatus === "APPROVED";
+      const nextStage: BookingStage =
+        remainsApproved ? "PAYMENT" : "GUEST_TYPE";
+
+      if (!remainsApproved) {
+        await saveBookingProgress(
+          workflow.booking.id,
+          "GUEST_TYPE",
+          {
+            availability_selections: selections,
+          }
+        );
+      }
 
       setWorkflow(
         (current) => ({
           ...current,
-          stage:
-            "GUEST_TYPE",
+          stage: nextStage,
           acceptedAccommodation,
           availabilitySelections:
             selections,
+          ...(remainsApproved
+            ? { approvalDecision: "APPROVED" }
+            : {
+                guestType: null,
+                rateSelection: null,
+                rateResult: null,
+                bookingConfirmation: null,
+                approvalDecision: null,
+                approvalRemarks: "",
+              }),
         })
       );
 
       setModal({
         type: "success",
-        title:
-          "Accommodation Accepted",
-        message:
-          "The selected room/bed has been accepted. Physical room locking will happen only after approval, payment and invoice.",
+        title: remainsApproved
+          ? "Accommodation Confirmed"
+          : "Accommodation Accepted",
+        message: remainsApproved
+          ? "The existing approved accommodation is unchanged. Continue to payment."
+          : "The selected room/bed has been accepted. Pricing and approval must be completed before payment and physical room locking.",
         onCloseAction: () => {
           setCurrentPage(
             "workflow"
@@ -2171,6 +2313,14 @@ console.log(
   const handlePaymentContinue = async (
     payment: PaymentData
   ) => {
+    if (workflow.paymentId) {
+      setWorkflow((current) => ({
+        ...current,
+        stage: "INVOICE",
+      }));
+      return;
+    }
+
     if (!loggedInUser) {
       setModal({
         type: "error",
@@ -3472,10 +3622,14 @@ const handleRoomLockedContinue = async (
           }
 
           onBack={() => {
-            void handleBookingStepBack(
-              "BOOKING_CONFIRMATION",
-              "BOOKING_CONFIRMATION"
-            );
+            if (workflow.approvalDecision === "APPROVED") {
+              setCurrentPage("booking");
+            } else {
+              void handleBookingStepBack(
+                "BOOKING_CONFIRMATION",
+                "BOOKING_CONFIRMATION"
+              );
+            }
           }}
 
           onDecision={

@@ -991,6 +991,555 @@ router.post("/", parseBookingFiles, async (req, res) => {
     }
 });
 
+router.put("/:bookingId", parseBookingFiles, async (req, res) => {
+    const userId = req.authUser?.id;
+    if (!userId) {
+        return res.status(401).json({
+            success: false,
+            message: "Authentication is required.",
+        });
+    }
+
+    let requestBody: Record<string, any> = req.body;
+    const uploadedFiles = Array.isArray(req.files)
+        ? req.files as Express.Multer.File[]
+        : [];
+    if (
+        typeof req.headers["content-type"] === "string" &&
+        req.headers["content-type"].startsWith("multipart/form-data")
+    ) {
+        if (typeof req.body.booking_payload !== "string") {
+            return res.status(400).json({
+                success: false,
+                message: "Multipart booking data is missing.",
+            });
+        }
+        try {
+            requestBody = JSON.parse(req.body.booking_payload);
+        } catch {
+            return res.status(400).json({
+                success: false,
+                message: "Multipart booking data is invalid JSON.",
+            });
+        }
+    }
+    if (
+        !requestBody ||
+        typeof requestBody !== "object" ||
+        Array.isArray(requestBody)
+    ) {
+        return res.status(400).json({
+            success: false,
+            message: "Booking data must be a JSON object.",
+        });
+    }
+
+    const {
+        booking_type,
+        check_in_date: checkInDate,
+        expected_check_out_date: checkOutDate,
+        number_of_guests: guestCountValue,
+        service_member: serviceMember,
+        guests,
+    } = requestBody;
+    const guestCount = Number(guestCountValue);
+
+    if (
+        !["CURRENT", "ADVANCE"].includes(booking_type) ||
+        typeof checkInDate !== "string" ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(checkInDate) ||
+        typeof checkOutDate !== "string" ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(checkOutDate) ||
+        checkOutDate <= checkInDate ||
+        !Number.isInteger(guestCount) ||
+        guestCount < 1 ||
+        guestCount > 10 ||
+        !Array.isArray(guests) ||
+        guests.length !== guestCount ||
+        !serviceMember ||
+        typeof serviceMember !== "object"
+    ) {
+        return res.status(400).json({
+            success: false,
+            message: "The booking details are incomplete or invalid.",
+        });
+    }
+
+    if (
+        ["service_number", "rank", "full_name", "mobile_number", "address"]
+            .some((field) =>
+                typeof serviceMember[field] !== "string" ||
+                !serviceMember[field].trim()
+            ) ||
+        !/^\d{10}$/.test(String(serviceMember.mobile_number))
+    ) {
+        return res.status(400).json({
+            success: false,
+            message: "Complete the booking person's required details before continuing.",
+        });
+    }
+
+    const guestIds = guests
+        .map((guest: Record<string, unknown>) =>
+            typeof guest?.id === "string" && guest.id ? guest.id : null
+        )
+        .filter((id: string | null): id is string => id !== null);
+    if (new Set(guestIds).size !== guestIds.length) {
+        return res.status(400).json({
+            success: false,
+            message: "A guest cannot be included more than once.",
+        });
+    }
+
+    for (let index = 0; index < guests.length; index++) {
+        const guest = guests[index];
+        if (
+            !guest ||
+            typeof guest.name !== "string" ||
+            !guest.name.trim() ||
+            !["MALE", "FEMALE"].includes(String(guest.gender).toUpperCase()) ||
+            !["SELF", "WIFE", "SON", "DAUGHTER", "MOTHER", "FATHER"]
+                .includes(String(guest.relationship).toUpperCase()) ||
+            !/^\d{10}$/.test(String(guest.mobile ?? "")) ||
+            (guest.aadhaar && !/^\d{12}$/.test(String(guest.aadhaar))) ||
+            (!guest.id && !/^\d{12}$/.test(String(guest.aadhaar ?? "")))
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: `Guest ${index + 1}: required information is invalid.`,
+            });
+        }
+
+        if (
+            String(guest.relationship).toUpperCase() !== "SELF" &&
+            (
+                typeof guest.relationshipProofType !== "string" ||
+                !guest.relationshipProofType.trim() ||
+                typeof guest.relationshipProofNumber !== "string" ||
+                !guest.relationshipProofNumber.trim()
+            )
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: `Guest ${index + 1}: relationship proof details are required.`,
+            });
+        }
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const bookingResult = await client.query(
+            `
+            SELECT
+                id,
+                booking_reference,
+                booking_type,
+                check_in_date::TEXT AS check_in_date,
+                expected_check_out_date::TEXT AS check_out_date,
+                number_of_guests,
+                created_by,
+                booking_status,
+                approval_status
+            FROM bookings
+            WHERE id = $1
+            FOR UPDATE
+            `,
+            [req.params.bookingId]
+        );
+        if (bookingResult.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({
+                success: false,
+                message: "Booking was not found.",
+            });
+        }
+
+        const booking = bookingResult.rows[0];
+        if (
+            booking.created_by !== userId &&
+            req.authUser?.role !== "ADMIN"
+        ) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({
+                success: false,
+                message: "Only the booking creator or an ADMIN can update this booking.",
+            });
+        }
+        if (
+            booking.booking_status !== "PENDING_APPROVAL" ||
+            !["PENDING", "APPROVED"].includes(booking.approval_status)
+        ) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({
+                success: false,
+                message: "Booking details cannot be changed at this workflow stage.",
+            });
+        }
+
+        const todayResult = await client.query(
+            "SELECT CURRENT_DATE::TEXT AS today"
+        );
+        const today = todayResult.rows[0].today;
+        if (
+            (booking_type === "CURRENT" && checkInDate !== today) ||
+            (booking_type === "ADVANCE" && checkInDate <= today)
+        ) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({
+                success: false,
+                message: booking_type === "CURRENT"
+                    ? `CURRENT booking must have today's check-in date (${today}).`
+                    : `ADVANCE booking must have a future check-in date after today (${today}).`,
+            });
+        }
+
+        const operationalRecords = await client.query(
+            `
+            SELECT EXISTS (
+                SELECT 1 FROM payments WHERE booking_id = $1
+            ) OR EXISTS (
+                SELECT 1 FROM allotments WHERE booking_id = $1
+            ) AS has_operational_records
+            `,
+            [booking.id]
+        );
+        if (operationalRecords.rows[0].has_operational_records) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({
+                success: false,
+                message: "This booking already has payment or allotment records and cannot be edited.",
+            });
+        }
+
+        const existingGuestResult = await client.query(
+            `
+            SELECT bg.guest_id, g.relationship, g.gender
+            FROM booking_guests bg
+            INNER JOIN guests g ON g.id = bg.guest_id
+            WHERE bg.booking_id = $1
+            `,
+            [booking.id]
+        );
+        const existingGuestIds = new Set<string>(
+            existingGuestResult.rows.map((row) => String(row.guest_id))
+        );
+        const existingRelationships = new Map<string, string>(
+            existingGuestResult.rows.map((row) => [
+                String(row.guest_id),
+                String(row.relationship ?? "").toUpperCase(),
+            ])
+        );
+        const existingGenders = new Map<string, string>(
+            existingGuestResult.rows.map((row) => [
+                String(row.guest_id),
+                String(row.gender ?? "").toUpperCase(),
+            ])
+        );
+        if (guestIds.some((id: string) => !existingGuestIds.has(id))) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({
+                success: false,
+                message: "A guest ID does not belong to this booking.",
+            });
+        }
+
+        const retainedGuestIds: string[] = [];
+        const savedGuests: Array<{ id: string }> = [];
+        for (let index = 0; index < guests.length; index++) {
+            const guest = guests[index];
+            if (typeof guest.id === "string" && guest.id) {
+                await client.query(
+                    `
+                    UPDATE guests
+                    SET
+                        guest_name = $2,
+                        gender = $3,
+                        relationship = $4,
+                        mobile_number = $5,
+                        address = $6,
+                        relationship_proof_type = $7,
+                        relationship_proof_number = $8,
+                        aadhaar_number = COALESCE(NULLIF($9, ''), aadhaar_number)
+                    WHERE id = $1
+                    `,
+                    [
+                        guest.id,
+                        guest.name.trim(),
+                        String(guest.gender).toUpperCase(),
+                        String(guest.relationship).toUpperCase(),
+                        guest.mobile,
+                        guest.address || null,
+                        guest.relationshipProofType || null,
+                        guest.relationshipProofNumber || null,
+                        guest.aadhaar || "",
+                    ]
+                );
+                retainedGuestIds.push(guest.id);
+                savedGuests.push({ id: guest.id });
+            } else {
+                const guestResult = await client.query(
+                    `
+                    INSERT INTO guests (
+                        guest_name,
+                        gender,
+                        mobile_number,
+                        address,
+                        relationship,
+                        relationship_proof_type,
+                        relationship_proof_number,
+                        aadhaar_number
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    RETURNING id
+                    `,
+                    [
+                        guest.name.trim(),
+                        String(guest.gender).toUpperCase(),
+                        guest.mobile,
+                        guest.address || null,
+                        String(guest.relationship).toUpperCase(),
+                        guest.relationshipProofType || null,
+                        guest.relationshipProofNumber || null,
+                        guest.aadhaar || null,
+                    ]
+                );
+                retainedGuestIds.push(guestResult.rows[0].id);
+                savedGuests.push({ id: guestResult.rows[0].id });
+                await client.query(
+                    `
+                    INSERT INTO booking_guests (
+                        booking_id,
+                        guest_id,
+                        is_primary_guest
+                    )
+                    VALUES ($1, $2, $3)
+                    `,
+                    [booking.id, guestResult.rows[0].id, index === 0]
+                );
+            }
+        }
+
+        for (let index = 0; index < savedGuests.length; index++) {
+            await client.query(
+                `
+                UPDATE booking_guests
+                SET is_primary_guest = $3
+                WHERE booking_id = $1 AND guest_id = $2
+                `,
+                [booking.id, savedGuests[index].id, index === 0]
+            );
+        }
+
+        const removedGuestIds = [...existingGuestIds].filter(
+            (id) => !retainedGuestIds.includes(id)
+        );
+        const bookingTermsChanged =
+            booking.booking_type !== booking_type ||
+            booking.check_in_date !== checkInDate ||
+            booking.check_out_date !== checkOutDate ||
+            Number(booking.number_of_guests) !== guestCount ||
+            removedGuestIds.length > 0 ||
+            guests.some(
+                (guest: Record<string, unknown>) =>
+                    !guest.id ||
+                    (
+                        typeof guest.id === "string" &&
+                        (
+                            existingRelationships.get(guest.id) !==
+                                String(guest.relationship ?? "").toUpperCase() ||
+                            existingGenders.get(guest.id) !==
+                                String(guest.gender ?? "").toUpperCase()
+                        )
+                    )
+            );
+        const approvalMustReset =
+            booking.approval_status === "APPROVED" &&
+            bookingTermsChanged;
+
+        if (removedGuestIds.length > 0) {
+            await client.query(
+                "DELETE FROM booking_acceptances WHERE booking_id = $1 AND guest_id = ANY($2::UUID[])",
+                [booking.id, removedGuestIds]
+            );
+            await client.query(
+                "DELETE FROM booking_documents WHERE booking_id = $1 AND guest_id = ANY($2::UUID[])",
+                [booking.id, removedGuestIds]
+            );
+            await client.query(
+                "DELETE FROM booking_guests WHERE booking_id = $1 AND guest_id = ANY($2::UUID[])",
+                [booking.id, removedGuestIds]
+            );
+        }
+
+        await client.query(
+            `
+            UPDATE bookings
+            SET
+                booking_type = $2,
+                check_in_date = $3,
+                expected_check_out_date = $4,
+                number_of_guests = $5,
+                acceptance_status = CASE
+                    WHEN $6 THEN 'PENDING'
+                    ELSE acceptance_status
+                END,
+                approval_status = CASE
+                    WHEN $7 THEN 'PENDING'
+                    ELSE approval_status
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $1
+            `,
+            [
+                booking.id,
+                booking_type,
+                checkInDate,
+                checkOutDate,
+                guestCount,
+                bookingTermsChanged,
+                approvalMustReset,
+            ]
+        );
+        await client.query(
+            `
+            UPDATE booking_service_members
+            SET
+                service_number = $2,
+                rank = $3,
+                full_name = $4,
+                mobile_number = $5,
+                address = $6,
+                aadhaar_number = COALESCE(NULLIF($7, ''), aadhaar_number)
+            WHERE booking_id = $1
+            `,
+            [
+                booking.id,
+                serviceMember.service_number.trim(),
+                serviceMember.rank.trim(),
+                serviceMember.full_name.trim(),
+                serviceMember.mobile_number,
+                serviceMember.address.trim(),
+                serviceMember.aadhaar_number || "",
+            ]
+        );
+
+        if (bookingTermsChanged) {
+            await client.query(
+                "DELETE FROM booking_pricing WHERE booking_id = $1",
+                [booking.id]
+            );
+        }
+        if (approvalMustReset) {
+            await client.query(
+                `
+                UPDATE booking_approvals
+                SET
+                    approval_status = 'PENDING',
+                    approved_at = NULL,
+                    remarks = CONCAT(
+                        COALESCE(remarks, ''),
+                        CASE
+                            WHEN COALESCE(remarks, '') = '' THEN ''
+                            ELSE ' | '
+                        END,
+                        'Re-approval required after booking changes.'
+                    )
+                WHERE booking_id = $1
+                  AND approval_status = 'APPROVED'
+                `,
+                [booking.id]
+            );
+        }
+
+        if (uploadedFiles.length > 0) {
+            const documentKey = getDocumentEncryptionKey();
+            const seenDocumentFields = new Set<string>();
+            for (const file of uploadedFiles) {
+                const guestMatch =
+                    /^occupant_document_(\d+)$/.exec(file.fieldname);
+                const guestIndex = guestMatch ? Number(guestMatch[1]) : -1;
+                if (
+                    file.fieldname !== "booking_person_document" &&
+                    (guestIndex < 0 || guestIndex >= savedGuests.length)
+                ) {
+                    await client.query("ROLLBACK");
+                    return res.status(400).json({
+                        success: false,
+                        message: "An uploaded document is not associated with a booking person or guest.",
+                    });
+                }
+                if (seenDocumentFields.has(file.fieldname)) {
+                    await client.query("ROLLBACK");
+                    return res.status(400).json({
+                        success: false,
+                        message: "Only one document may be uploaded for each booking person or guest.",
+                    });
+                }
+                if (!isSupportedDocument(file)) {
+                    await client.query("ROLLBACK");
+                    return res.status(400).json({
+                        success: false,
+                        message: "Documents must be valid PDF, JPEG, or PNG files.",
+                    });
+                }
+                seenDocumentFields.add(file.fieldname);
+                const encrypted = encryptBookingDocument(file.buffer, documentKey);
+                await client.query(
+                    `
+                    INSERT INTO booking_documents (
+                        id,
+                        booking_id,
+                        guest_id,
+                        person_type,
+                        content_type,
+                        encrypted_content,
+                        iv,
+                        auth_tag,
+                        uploaded_by
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    `,
+                    [
+                        randomUUID(),
+                        booking.id,
+                        guestIndex < 0 ? null : savedGuests[guestIndex].id,
+                        guestIndex < 0 ? "BOOKING_PERSON" : "OCCUPANT",
+                        file.mimetype,
+                        encrypted.encryptedContent,
+                        encrypted.iv,
+                        encrypted.authTag,
+                        userId,
+                    ]
+                );
+            }
+        }
+
+        await client.query("COMMIT");
+        return res.json({
+            success: true,
+            booking: {
+                id: booking.id,
+                booking_reference: booking.booking_reference,
+                approval_status: approvalMustReset
+                    ? "PENDING"
+                    : booking.approval_status,
+            },
+            guests: savedGuests,
+        });
+    } catch (error) {
+        await client.query("ROLLBACK");
+        console.error("Booking update error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Unable to update this booking.",
+        });
+    } finally {
+        client.release();
+    }
+});
+
 router.delete("/:bookingId", async (req, res) => {
     const userId = req.authUser?.id;
 
@@ -1129,6 +1678,7 @@ router.get("/:bookingId/resume", async (req, res) => {
                 sm.service_number,
                 sm.rank AS service_rank,
                 sm.full_name AS service_name,
+                sm.mobile_number AS service_mobile,
                 sm.address AS service_address,
                 wp.current_step,
                 wp.progress_data
@@ -1150,9 +1700,22 @@ router.get("/:bookingId/resume", async (req, res) => {
         }
 
         const booking = bookingResult.rows[0];
+        const isAwaitingApproval =
+            booking.booking_status === "PENDING_APPROVAL" &&
+            booking.approval_status === "PENDING";
+        const isApprovedPendingWorkflow =
+            booking.booking_status === "PENDING_APPROVAL" &&
+            booking.approval_status === "APPROVED";
+        const canContinueApprovedWorkflow =
+            isApprovedPendingWorkflow &&
+            ["ADMIN", "RECEPTIONIST"].includes(
+                String(req.authUser?.role ?? "")
+            );
+
         if (
             booking.created_by !== userId &&
-            req.authUser?.role !== "ADMIN"
+            req.authUser?.role !== "ADMIN" &&
+            !canContinueApprovedWorkflow
         ) {
             return res.status(403).json({
                 success: false,
@@ -1160,16 +1723,9 @@ router.get("/:bookingId/resume", async (req, res) => {
             });
         }
 
-        const isAwaitingApproval =
-            booking.booking_status === "PENDING_APPROVAL" &&
-            booking.approval_status === "PENDING";
-        const isApprovedAwaitingPayment =
-            booking.booking_status === "PENDING_APPROVAL" &&
-            booking.approval_status === "APPROVED";
-
         if (
             !isAwaitingApproval &&
-            !isApprovedAwaitingPayment
+            !isApprovedPendingWorkflow
         ) {
             return res.status(409).json({
                 success: false,
@@ -1177,18 +1733,13 @@ router.get("/:bookingId/resume", async (req, res) => {
             });
         }
 
-        const paymentResult = await pool.query(
-            "SELECT 1 FROM payments WHERE booking_id = $1 LIMIT 1",
-            [booking.id]
-        );
-        if ((paymentResult.rowCount ?? 0) > 0) {
-            return res.status(409).json({
-                success: false,
-                message: "This booking already has a payment record and cannot be resumed at this stage.",
-            });
-        }
-
-        const [guestResult, acceptanceResult, pricingResult] =
+        const [
+            guestResult,
+            acceptanceResult,
+            pricingResult,
+            paymentResult,
+            activeAllotmentResult,
+        ] =
             await Promise.all([
                 pool.query(
                     `
@@ -1198,6 +1749,7 @@ router.get("/:bookingId/resume", async (req, res) => {
                         g.gender,
                         g.relationship,
                         g.mobile_number,
+                        g.address,
                         g.identity_proof_type,
                         g.relationship_proof_type,
                         g.relationship_proof_number,
@@ -1251,7 +1803,60 @@ router.get("/:bookingId/resume", async (req, res) => {
                     `,
                     [booking.id]
                 ),
+                pool.query(
+                    `
+                    SELECT
+                        id,
+                        amount,
+                        payment_method,
+                        transaction_number,
+                        payment_date::TEXT AS payment_date,
+                        remarks
+                    FROM payments
+                    WHERE booking_id = $1
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    `,
+                    [booking.id]
+                ),
+                pool.query(
+                    `
+                    SELECT 1
+                    FROM allotments
+                    WHERE booking_id = $1
+                      AND allotment_status = 'ALLOTTED'
+                    LIMIT 1
+                    `,
+                    [booking.id]
+                ),
             ]);
+
+        const payment = paymentResult.rows[0] ?? null;
+        const invoiceResult = payment
+            ? await pool.query(
+                `
+                SELECT
+                    booking_invoices.id,
+                    booking_invoices.booking_id,
+                    booking_invoices.invoice_number,
+                    booking_invoices.invoice_type,
+                    booking_invoices.invoice_date::TEXT AS invoice_date,
+                    booking_invoices.amount,
+                    booking_invoices.payment_id,
+                    payments.payment_method,
+                    payments.transaction_number,
+                    payments.payment_date::TEXT AS payment_date
+                FROM booking_invoices
+                INNER JOIN payments
+                    ON payments.id = booking_invoices.payment_id
+                WHERE booking_invoices.payment_id = $1
+                ORDER BY booking_invoices.created_at DESC
+                LIMIT 1
+                `,
+                [payment.id]
+            )
+            : { rows: [] };
+        const invoice = invoiceResult.rows[0] ?? null;
 
         const progressData =
             booking.progress_data &&
@@ -1262,11 +1867,17 @@ router.get("/:bookingId/resume", async (req, res) => {
         const acceptedCount = acceptanceResult.rows.length;
         const pricing = pricingResult.rows[0] ?? null;
 
-        const currentStep = isApprovedAwaitingPayment
-            ? acceptedCount === Number(booking.number_of_guests) &&
-                Boolean(pricing)
-                ? "PAYMENT"
-                : null
+        const currentStep = isApprovedPendingWorkflow
+            ? acceptedCount !== Number(booking.number_of_guests) ||
+                !pricing
+                ? null
+                : !payment
+                    ? "PAYMENT"
+                    : !invoice
+                        ? "INVOICE"
+                        : (activeAllotmentResult.rowCount ?? 0) === 0
+                            ? "ROOM_LOCKED"
+                            : null
             : resolveResumableBookingStep({
                 acceptedGuestCount: acceptedCount,
                 requiredGuestCount: Number(booking.number_of_guests),
@@ -1277,8 +1888,8 @@ router.get("/:bookingId/resume", async (req, res) => {
         if (!currentStep) {
             return res.status(409).json({
                 success: false,
-                message: isApprovedAwaitingPayment
-                    ? "The approved booking is missing accepted accommodation or pricing data required for payment."
+                message: isApprovedPendingWorkflow
+                    ? "The approved booking has already completed its next workflow step or is missing required booking data."
                     : "This booking has already completed its booking submission steps.",
             });
         }
@@ -1291,6 +1902,7 @@ router.get("/:bookingId/resume", async (req, res) => {
                     service_number: booking.service_number,
                     rank: booking.service_rank,
                     full_name: booking.service_name,
+                    mobile: booking.service_mobile,
                     address: booking.service_address,
                 },
                 guests: guestResult.rows,
@@ -1299,6 +1911,8 @@ router.get("/:bookingId/resume", async (req, res) => {
             progress_data: progressData,
             accepted_accommodation: acceptanceResult.rows,
             pricing,
+            payment,
+            invoice,
         });
     } catch (error) {
         console.error("Booking resume error:", error);

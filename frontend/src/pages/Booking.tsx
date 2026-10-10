@@ -357,6 +357,11 @@ function Booking({
   ] = useState(initialBooking?.checkOut ?? "");
   const [checkInError, setCheckInError] = useState("");
   const [checkOutError, setCheckOutError] = useState("");
+  const [validationMessage, setValidationMessage] = useState("");
+
+  const showValidationMessage = (message: string) => {
+    setValidationMessage(message);
+  };
 
 
   /* =================================
@@ -424,6 +429,7 @@ function Booking({
       | "CURRENT"
       | "ADVANCE"
   ) => {
+    setValidationMessage("");
     setBookingType(
       newType
     );
@@ -781,9 +787,9 @@ function Booking({
       !serviceman.name ||
       !serviceman.mobile ||
       !serviceman.address ||
-      !serviceman.aadhaar
+      (!serviceman.aadhaar && !initialBooking?.id)
     ) {
-      window.alert(
+      showValidationMessage(
         tr(
           "Please complete all Serving / Ex-Servicemen details.",
           "कृपया सेवा बजावत असलेले / माजी सैनिक यांची सर्व माहिती पूर्ण करा."
@@ -794,7 +800,7 @@ function Booking({
     }
 
     if (!/^\d{10}$/.test(serviceman.mobile)) {
-      window.alert(
+      showValidationMessage(
         tr(
           "The booking person's mobile number must contain exactly 10 digits.",
           "बुकिंग व्यक्तीचा मोबाईल क्रमांक नेमका १० अंकांचा असावा."
@@ -803,8 +809,8 @@ function Booking({
       return false;
     }
 
-    if (!serviceman.document) {
-      window.alert(
+    if (!serviceman.document && !initialBooking?.id) {
+      showValidationMessage(
         tr(
           "Please upload the booking person's ID document.",
           "कृपया बुकिंग व्यक्तीचे ओळखपत्र अपलोड करा."
@@ -813,8 +819,11 @@ function Booking({
       return false;
     }
 
-    if (!/^\d{12}$/.test(serviceman.aadhaar)) {
-      window.alert(tr(
+    if (
+      serviceman.aadhaar &&
+      !/^\d{12}$/.test(serviceman.aadhaar)
+    ) {
+      showValidationMessage(tr(
         "The booking person's Aadhaar number must contain exactly 12 digits.",
         "बुकिंग व्यक्तीचा आधार क्रमांक नेमका १२ अंकांचा असावा."
       ));
@@ -825,7 +834,7 @@ function Booking({
       !checkIn ||
       !checkOut
     ) {
-      window.alert(
+      showValidationMessage(
         tr(
           "Please enter check-in and check-out dates.",
           "कृपया चेक-इन आणि चेक-आउटच्या तारखा प्रविष्ट करा."
@@ -851,7 +860,7 @@ function Booking({
       selectedCheckInDate !==
       today
     ) {
-      window.alert(
+      showValidationMessage(
         tr(
           `CURRENT booking must start today (${today}).`,
           `CURRENT बुकिंग आजच्या तारखेपासूनच सुरू झाली पाहिजे (${today}).`
@@ -867,7 +876,7 @@ function Booking({
       selectedCheckInDate <=
       today
     ) {
-      window.alert(
+      showValidationMessage(
         tr(
           `ADVANCE booking must start from tomorrow (${tomorrow}) or later.`,
           `ADVANCE बुकिंग उद्यापासून (${tomorrow}) किंवा त्यानंतरची असली पाहिजे.`
@@ -880,7 +889,7 @@ function Booking({
     if (
       !selectedCheckOutDate
     ) {
-      window.alert(
+      showValidationMessage(
         tr(
           "Please enter a valid check-out date.",
           "कृपया वैध चेक-आउट तारीख प्रविष्ट करा."
@@ -894,7 +903,7 @@ function Booking({
       new Date(checkOut) <=
       new Date(checkIn)
     ) {
-      window.alert(
+      showValidationMessage(
         tr(
           "Check-out must be after check-in.",
           "चेक-आउटची तारीख व वेळ चेक-इननंतरची असली पाहिजे."
@@ -913,7 +922,7 @@ function Booking({
         guests[i];
 
       if (!guest.gender) {
-        window.alert(
+        showValidationMessage(
           tr(
             `Please select a gender for Guest ${i + 1}.`,
             `कृपया अतिथी ${i + 1} साठी लिंग निवडा.`
@@ -926,10 +935,10 @@ function Booking({
         !guest.name ||
         !guest.relationship ||
         !guest.mobile ||
-        !guest.aadhaar ||
-        !guest.document
+        (!guest.aadhaar && !guest.id) ||
+        (!guest.document && !guest.id)
       ) {
-        window.alert(
+        showValidationMessage(
           tr(
             `Complete identity details and upload a document for Guest ${i + 1}.`,
             `अतिथी ${i + 1} ची ओळख माहिती पूर्ण करून दस्तऐवज अपलोड करा.`
@@ -940,15 +949,18 @@ function Booking({
       }
 
       if (!/^\d{10}$/.test(guest.mobile)) {
-        window.alert(tr(
+        showValidationMessage(tr(
           `Guest ${i + 1} mobile number must contain exactly 10 digits.`,
           `अतिथी ${i + 1} चा मोबाईल क्रमांक नेमका १० अंकांचा असावा.`
         ));
         return false;
       }
 
-      if (!/^\d{12}$/.test(guest.aadhaar)) {
-        window.alert(tr(
+      if (
+        guest.aadhaar &&
+        !/^\d{12}$/.test(guest.aadhaar)
+      ) {
+        showValidationMessage(tr(
           `Guest ${i + 1} Aadhaar number must contain exactly 12 digits.`,
           `अतिथी ${i + 1} चा आधार क्रमांक नेमका १२ अंकांचा असावा.`
         ));
@@ -963,7 +975,7 @@ function Booking({
           !guest.relationshipProofNumber
         )
       ) {
-        window.alert(
+        showValidationMessage(
           tr(
             `Please complete relationship proof details for Guest ${i + 1}.`,
             `कृपया अतिथी ${i + 1} साठी नातेसंबंधाच्या पुराव्याची माहिती पूर्ण करा.`
@@ -990,7 +1002,7 @@ function Booking({
     }
 
     onContinue({
-      id: undefined,
+      id: initialBooking?.id,
 
       category,
 
@@ -1012,7 +1024,10 @@ function Booking({
   ================================== */
 
   return (
-    <main className="booking-screen">
+    <main
+      className="booking-screen"
+      onChangeCapture={() => setValidationMessage("")}
+    >
 
       {/* =================================
           HEADER
@@ -1076,6 +1091,15 @@ function Booking({
 
       </header>
 
+      {validationMessage && (
+        <div
+          className="booking-validation-message"
+          role="alert"
+          aria-live="polite"
+        >
+          {validationMessage}
+        </div>
+      )}
 
       {/* =================================
           BOOKING TYPE
@@ -1749,7 +1773,7 @@ function Booking({
               onChange={(event) => {
                 const file = event.target.files?.[0] ?? null;
                 if (file && file.size > 5 * 1024 * 1024) {
-                  window.alert(tr("Each document must be 5 MB or smaller.", "प्रत्येक दस्तऐवज ५ MB किंवा त्यापेक्षा कमी असावा."));
+                  showValidationMessage(tr("Each document must be 5 MB or smaller.", "प्रत्येक दस्तऐवज ५ MB किंवा त्यापेक्षा कमी असावा."));
                   event.target.value = "";
                   return;
                 }
@@ -2079,7 +2103,7 @@ function Booking({
                     onChange={(event) => {
                       const file = event.target.files?.[0] ?? null;
                       if (file && file.size > 5 * 1024 * 1024) {
-                        window.alert(tr("Each document must be 5 MB or smaller.", "प्रत्येक दस्तऐवज ५ MB किंवा त्यापेक्षा कमी असावा."));
+                        showValidationMessage(tr("Each document must be 5 MB or smaller.", "प्रत्येक दस्तऐवज ५ MB किंवा त्यापेक्षा कमी असावा."));
                         event.target.value = "";
                         return;
                       }
